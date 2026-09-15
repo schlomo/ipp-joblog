@@ -156,3 +156,15 @@ def test_the_whole_card_opens_the_printer_page(tmp_path, make_job):
     # anchor is nested inside another.
     first_close, second_open = card.index("</a>"), card.index("<a ", card.index("<a ") + 1)
     assert first_close < second_open
+
+
+def test_the_printer_link_on_a_card_opens_a_new_tab(tmp_path, make_job):
+    """Its own page stays in the tab; the printer itself does not."""
+    with JobStore(tmp_path / "hpm880.sqlite3") as store:
+        store.remember_facts({"host": "hpm880"})
+        store.add([make_job()])
+    html = write_index(tmp_path, tmp_path / "public", refresh_seconds=0).read_text()
+    card = html.split('<div class="card">')[1].split("</div>")[0]
+    own_page, printer = card.split("</a>")[0], card.split("</a>")[1]
+    assert "target=" not in own_page  # the card's own link navigates in place
+    assert 'target="_blank"' in printer and 'rel="noopener noreferrer"' in printer

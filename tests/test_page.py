@@ -217,3 +217,17 @@ def test_the_bar_column_can_be_hidden_as_a_unit():
     html = dashboard().render()
     assert '<th class="plot">' in html
     assert '<td class="plot">' in html
+
+
+def test_links_that_leave_the_dashboard_open_a_new_tab():
+    """The page reloads itself every poll, so following a link in place loses it."""
+    html = dashboard(facts={"host": "hpm880"}).render()
+    web_ui = next(line for line in html.splitlines() if "http://hpm880/" in line)
+    assert 'target="_blank"' in web_ui
+    assert 'rel="noopener noreferrer"' in web_ui
+
+
+def test_links_within_the_dashboard_stay_in_the_tab():
+    html = dashboard().render()
+    back = next(line for line in html.splitlines() if 'href="index.html"' in line)
+    assert "target=" not in back
