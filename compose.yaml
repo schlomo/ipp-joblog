@@ -1,0 +1,15 @@
+services:
+  ipp-joblog:
+    image: ghcr.io/schlomo/ipp-joblog:latest
+    # build: .          # uncomment to build from a checkout instead
+    environment:
+      IPP_PRINTER_HOST: "192.168.1.50"   # your printer
+      TZ: "Europe/Berlin"                # so timestamps read local
+    ports:
+      - "8080:8080"
+    volumes:
+      - ipp-joblog:/data
+    restart: unless-stopped
+
+volumes:
+  ipp-joblog:

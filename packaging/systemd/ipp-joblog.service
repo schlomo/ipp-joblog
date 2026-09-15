@@ -1,0 +1,37 @@
+[Unit]
+Description=Per-user page accounting for an IPP printer
+Documentation=https://github.com/schlomo/ipp-joblog
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+# Set IPP_PRINTER_HOST here, or in /etc/default/ipp-joblog.
+Environment=IPP_PRINTER_HOST=
+Environment=IPP_JOBLOG_STATE_DIR=/var/lib/ipp-joblog
+EnvironmentFile=-/etc/default/ipp-joblog
+ExecStart=/usr/local/bin/ipp-joblog serve
+Restart=always
+RestartSec=10
+
+# The service needs nothing but its own state directory and outbound port 631.
+DynamicUser=yes
+StateDirectory=ipp-joblog
+WorkingDirectory=/var/lib/ipp-joblog
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
