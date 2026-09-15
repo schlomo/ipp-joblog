@@ -60,6 +60,24 @@ footer { color: var(--dim); font-size: .8rem; margin-top: 2.5rem; }
   th, td { padding: .45rem .55rem; }
   /* The bars need width a phone does not have; the numbers say the same. */
   .plot { display: none; }
+
+  /* Seven columns cannot fit, and squeezing the file name into a sliver is
+     the worst of them. Each job becomes a card: its name on one line, the
+     rest as a sentence under it. */
+  #jobs, #jobs thead, #jobs tbody, #jobs tr, #jobs td { display: block; }
+  #jobs thead { display: none; }
+  #jobs tr { display: flex; flex-wrap: wrap; align-items: baseline;
+             gap: .1rem .45rem; padding: .6rem .85rem;
+             border-bottom: 1px solid var(--line); }
+  #jobs tr:last-child { border-bottom: 0; }
+  #jobs td { padding: 0; border: 0; text-align: left; white-space: nowrap; }
+  #jobs td.name { order: -1; flex: 1 0 100%; white-space: normal;
+                  font-weight: 600; margin-bottom: .1rem; }
+  #jobs td:not(.name) { color: var(--dim); font-size: .85rem; }
+  #jobs td.who::before, #jobs td.pages::before, #jobs td.sheets::before,
+  #jobs td.ink::before, #jobs td.state::before { content: "·"; margin-right: .45rem; }
+  #jobs td.pages::after { content: " pages"; }
+  #jobs td.sheets::after { content: " sheets"; }
 }
 a { color: inherit; }
 .card:hover { border-color: var(--bar); }
@@ -133,7 +151,16 @@ def bars(color: int, mono: int, largest: int) -> Cell:
     return Cell(f'<div class="bars">{segments}</div>')
 
 
-def table(headings: tuple[str, ...], rows: list[list[Cell]], classes: tuple[str, ...] = ()) -> str:
+JOB_COLUMNS = ("when", "who", "pages", "sheets", "ink", "state", "name")
+USER_COLUMNS = ("who", "", "", "", "", "", "plot")
+
+
+def table(
+    headings: tuple[str, ...],
+    rows: list[list[Cell]],
+    classes: tuple[str, ...] = (),
+    css_id: str = "",
+) -> str:
     """One HTML table. ``classes`` optionally names a CSS class per column."""
 
     def cell(index: int, value: Cell) -> str:
@@ -149,8 +176,9 @@ def table(headings: tuple[str, ...], rows: list[list[Cell]], classes: tuple[str,
         "<tr>" + "".join(cell(index, value) for index, value in enumerate(row)) + "</tr>"
         for row in rows
     )
+    ident = f' id="{css_id}"' if css_id else ""
     return (
-        f'<div class="wrap"><table>\n<thead><tr>{head}</tr></thead>\n'
+        f'<div class="wrap"><table{ident}>\n<thead><tr>{head}</tr></thead>\n'
         f"<tbody>\n{body}\n</tbody></table></div>"
     )
 
@@ -356,10 +384,10 @@ updated {self.generated_at.strftime("%d %b %Y %H:%M:%S")}</p>
 <div class="cards">{self.cards()}</div>
 
 <h2>Per user</h2>
-{table(USER_HEADINGS, self.user_rows(), classes=("", "", "", "", "", "", "plot"))}
+{table(USER_HEADINGS, self.user_rows(), classes=USER_COLUMNS, css_id="users")}
 
 <h2>Recent jobs</h2>
-{table(JOB_HEADINGS, self.job_rows(), classes=("", "", "", "", "", "", "name"))}
+{table(JOB_HEADINGS, self.job_rows(), classes=JOB_COLUMNS, css_id="jobs")}
 
 <h2>About this printer</h2>
 {facts_list(self.facts) or '<p class="sub">Nothing recorded yet.</p>'}

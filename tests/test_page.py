@@ -231,3 +231,20 @@ def test_links_within_the_dashboard_stay_in_the_tab():
     html = dashboard().render()
     back = next(line for line in html.splitlines() if 'href="index.html"' in line)
     assert "target=" not in back
+
+
+def test_each_job_becomes_a_card_on_a_phone():
+    """Seven columns cannot fit; the file name suffers most when they are forced."""
+    html = dashboard().render()
+    assert '<table id="jobs">' in html
+    assert "#jobs thead { display: none; }" in html
+    assert "#jobs td.name { order: -1; flex: 1 0 100%;" in html
+    # the numbers keep their meaning once the headings are gone
+    assert '#jobs td.pages::after { content: " pages"; }' in html
+
+
+def test_job_columns_are_addressable_by_name():
+    html = dashboard().render()
+    for column in ("when", "who", "pages", "sheets", "ink", "state", "name"):
+        assert f'<td class="{column}">' in html, column
+        assert f'<th class="{column}">' in html, column
