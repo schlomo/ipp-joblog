@@ -13,7 +13,14 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from ipp_joblog import diagnose as diagnostics
-from ipp_joblog.ipp import COMMON_PATHS, IppClient, IppError, Target, parse_target
+from ipp_joblog.ipp import (
+    COMMON_PATHS,
+    Attempt,
+    IppClient,
+    IppError,
+    Target,
+    parse_target,
+)
 from ipp_joblog.jobs import PrinterJobLog
 from ipp_joblog.output import job_line, jobs_csv, totals_csv, totals_json, totals_table
 from ipp_joblog.poller import Poller, PollResult
@@ -233,18 +240,55 @@ def connect(settings: Settings, *, quiet: bool = False) -> IppClient:
         return client
 
     states = diagnostics.scan(target.host, min(settings.timeout, 3.0))
+    connect.last_scan = states  # the caller reports it; discovery just uses it
     if not quiet:
-        for port, what in diagnostics.DIAGNOSTIC_PORTS:
-            notice(f"  {port:<5} {states[port]:<13} {what}")
+        notice(f"scanning {target.host}")
+        for line in diagnostics.port_table(states):
+            notice(line)
+
     ports = (target.port,) if target.port else diagnostics.worth_trying(states)
     paths = (target.path,) if target.path else COMMON_PATHS
-
-    client.port, client.path = client.find_endpoint(
-        paths=paths, ports=ports, on_attempt=None if quiet else _print_attempt
-    )
+    attempts: list[Attempt] = []
+    try:
+        # The client is left pointing at what was found, TLS flag included.
+        client.find_endpoint(paths=paths, ports=ports, on_attempt=attempts.append)
+    finally:
+        connect.last_attempts = attempts
+        if not quiet and attempts:
+            notice("looking for IPP on the open ports")
+            for line in summarise_attempts(attempts):
+                notice(line)
     if not quiet:
-        notice(f"using IPP endpoint: {client.printer_uri}")
+        notice(f"found IPP at {client.printer_uri}")
     return client
+
+
+def summarise_attempts(attempts: list[Attempt]) -> list[str]:
+    """One line per port, rather than one per path.
+
+    Five paths against two ports is twenty near-identical failures, and the
+    interesting part is only ever which reason came back.
+    """
+    by_port: dict[tuple[int, bool], list[Attempt]] = {}
+    for attempt in attempts:
+        if attempt.path is not None:  # a closed port is already in the scan table
+            by_port.setdefault((attempt.port, attempt.secure), []).append(attempt)
+
+    lines = []
+    for (port, secure), tried in by_port.items():
+        label = f"{port}{' (TLS)' if secure else ''}"
+        found = next((one for one in tried if one.failure is None), None)
+        if found:
+            lines.append(f"  {label:<11} answered IPP at {found.path}")
+            continue
+        reasons: dict[str, int] = {}
+        for one in tried:
+            reasons[one.failure or ""] = reasons.get(one.failure or "", 0) + 1
+        summary = ", ".join(
+            f"{reason} x{count}" if count > 1 else reason for reason, count in reasons.items()
+        )
+        lines.append(f"  {label:<11} {len(tried)} paths tried: {summary}")
+    return lines
 
 
 def configuration_advice(client: IppClient) -> list[str]:
@@ -291,10 +335,11 @@ def command_probe(settings: Settings) -> int:
     """
     try:
         client = connect(settings)
-    except (IppError, OSError) as error:
-        notice(f"error: {error}")
-        print("\n".join(diagnostics.unreachable_report(settings.host, settings.timeout)))
-        print("\n".join(diagnostics.issue_invitation(settings.host)))
+    except (IppError, OSError):
+        host = settings.target.host
+        print("")
+        print("\n".join(diagnostics.verdict(host, connect.last_scan)))
+        print("\n".join(diagnostics.issue_invitation(host)))
         return 1
 
     report = probe(client)
@@ -304,7 +349,8 @@ def command_probe(settings: Settings) -> int:
         print("\n".join(configuration_advice(client)))
         return 0
 
-    notice(report.problem())
+    print("")
+    print(report.problem().strip())
     print("\nFull detail, since this printer did not give us what we need:\n")
     print("\n".join(diagnostics.report(client)))
     print("\n".join(diagnostics.issue_invitation(settings.host)))
@@ -321,13 +367,6 @@ def command_diagnose(settings: Settings) -> int:
         print("\n".join(diagnostics.report(client)))
     print("\n".join(diagnostics.issue_invitation(settings.host)))
     return 0
-
-
-def _print_attempt(url: str, failure: str | None) -> None:
-    """Show each endpoint tried while discovering the right one."""
-    outcome = "ok  " if failure is None else "fail"
-    reason = "" if failure is None else f"  ({failure})"
-    notice(f"  {outcome} {url}{reason}")
 
 
 def command_poll(settings: Settings) -> int:

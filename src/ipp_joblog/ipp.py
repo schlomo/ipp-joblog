@@ -175,6 +175,29 @@ class IppError(RuntimeError):
     """The printer refused the request or sent something we cannot decode."""
 
 
+class NotIpp(IppError):
+    """Something answered at the HTTP level, but it was not IPP.
+
+    Worth its own type: it proves the port speaks HTTP, so there is no point
+    asking the same port again over TLS.
+    """
+
+
+@dataclass(frozen=True, slots=True)
+class Attempt:
+    """One endpoint tried during discovery."""
+
+    port: int
+    secure: bool
+    path: str | None = None  # None when the port itself was not worth a request
+    failure: str | None = None  # None when this one worked
+
+    @property
+    def url(self) -> str:
+        scheme = "https" if self.secure else "http"
+        return f"{scheme}://{self.port}{self.path or ''}"
+
+
 class Attribute:
     """An IPP attribute: a name plus one or more values of the same tag."""
 
@@ -362,13 +385,10 @@ class IppClient:
                 # Plenty of things answer 200 with a body that is not IPP at all.
                 content_type = response.headers.get_content_type()
                 if content_type != IPP_CONTENT_TYPE:
-                    raise IppError(
-                        f"{operation.name}: {self._http_url} answered with "
-                        f"{content_type or 'no content type'}, not {IPP_CONTENT_TYPE}"
-                    )
+                    raise NotIpp(f"answered {content_type or 'nothing'}, not IPP")
                 payload = response.read()
         except HTTPError as error:
-            raise IppError(f"{operation.name}: HTTP {error.code} from {self._http_url}") from error
+            raise NotIpp(f"HTTP {error.code}") from error
         status_code, groups = decode_response(payload)
         if status_code >= 0x0100:
             raise IppError(f"{operation.name} failed with IPP status 0x{status_code:04x}")
@@ -402,37 +422,51 @@ class IppClient:
         self,
         paths: tuple[str, ...] = COMMON_PATHS,
         ports: tuple[int, ...] = COMMON_PORTS,
-        on_attempt: Callable[[str, str | None], None] | None = None,
-    ) -> tuple[int, str]:
+        on_attempt: Callable[[Attempt], None] | None = None,
+    ) -> Attempt:
         """Find where this printer speaks IPP, as ``(port, path)``.
 
         Both halves are vendor-specific. Each port is checked for a listener
         first, so a closed one costs a connection rather than a request per
         path, and the caller learns that nothing was listening at all -- which
         is the difference between "wrong path" and "not an IPP printer".
+
+        On success the client is left pointing at what was found, scheme
+        included, and that endpoint is returned. Restoring the previous one
+                would silently undo the TLS flag and speak plain HTTP to a
+        printer that only offers IPPS.
         """
         original = (self.port, self.path, self.secure)
+        spoke_http: set[int] = set()
+        found: Attempt | None = None
         try:
             for port, secure in _endpoint_order(ports):
+                # A port that already answered HTTP will not answer TLS as well.
+                if secure and port in spoke_http:
+                    continue
                 self.port, self.secure = port, secure
                 state = port_state(self.host, port, min(self._timeout, PORT_PROBE_TIMEOUT))
                 if state != "open":
                     if on_attempt:
-                        on_attempt(f"{self.scheme}://{self.host}:{port}", state)
+                        on_attempt(Attempt(port, secure, failure=state))
                     continue
                 for candidate in paths:
                     self.path = candidate
                     try:
                         self.printer_attributes()
                     except (IppError, OSError) as error:
+                        if isinstance(error, NotIpp):
+                            spoke_http.add(port)
                         if on_attempt:
-                            on_attempt(self._http_url, str(error))
+                            on_attempt(Attempt(port, secure, candidate, str(error)))
                         continue
+                    found = Attempt(port, secure, candidate)
                     if on_attempt:
-                        on_attempt(self._http_url, None)
-                    return port, candidate
+                        on_attempt(found)
+                    return found
         finally:
-            self.port, self.path, self.secure = original
+            if found is None:  # leave a successful discovery in place
+                self.port, self.path, self.secure = original
         raise IppError(
             f"no IPP endpoint answered on {self.host}; tried ports "
             f"{', '.join(str(port) for port in ports)} and paths {', '.join(paths)}"

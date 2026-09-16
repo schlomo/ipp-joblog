@@ -11,7 +11,6 @@ import time
 from datetime import datetime
 
 from ipp_joblog.ipp import (
-    COMMON_PATHS,
     COMMON_PORTS,
     Attribute,
     IppClient,
@@ -54,48 +53,46 @@ def worth_trying(states: dict[int, str]) -> tuple[int, ...]:
     return candidates or COMMON_PORTS
 
 
-def reachability(host: str, timeout: float, states: dict[int, str] | None = None) -> list[str]:
-    """What is listening, and what that says about the printer."""
-    states = scan(host, timeout) if states is None else states
-    lines = [f"host: {host}"]
-    lines += [f"  {port:<5} {states[port]:<13} {what}" for port, what in DIAGNOSTIC_PORTS]
+def port_table(states: dict[int, str]) -> list[str]:
+    """The scan, printed once and referred to afterwards."""
+    return [f"  {port:<5} {states[port]:<9} {what}" for port, what in DIAGNOSTIC_PORTS]
 
-    ipp, raw, lpd = states[631], states[9100], states[515]
-    web = "open" in (states[80], states[443])
+
+def verdict(host: str, states: dict[int, str]) -> list[str]:
+    """What the pattern of open ports means, said once."""
+    raw, lpd = states[9100], states[515]
+    web = [port for port in (80, 443) if states[port] == "open"]
 
     if all(state == "unknown host" for state in states.values()):
-        lines.append("\nThe name does not resolve. Check the spelling, or use the IP address.")
-    elif not any(state == "open" for state in states.values()):
+        return [f"{host} does not resolve. Check the spelling, or use the IP address."]
+
+    if not any(state == "open" for state in states.values()):
         if all(state == "refused" for state in states.values()):
-            lines.append(
-                "\nSomething is at that address and refuses every printing port, so it is"
-                "\nprobably not the printer. A printer on Wi-Fi and DHCP may have moved;"
-                "\ncheck the address on the printer itself."
-            )
-        else:
-            lines.append(
-                "\nNothing answered at all. If the printer sleeps deeply it may need waking;"
-                "\notherwise check this machine can reach it and that no firewall is between."
-            )
-    elif ipp != "open" and (raw == "open" or lpd == "open"):
+            return [
+                f"{host} refuses every printing port, so it is probably not the printer any",
+                "more. One on Wi-Fi and DHCP may have moved; check the address on the device.",
+            ]
+        return [
+            f"{host} did not answer at all. A deeply sleeping printer may need waking;",
+            "otherwise check this machine can reach it and that nothing filters between.",
+        ]
+
+    lines = [f"{host} does not answer IPP."]
+    if raw == "open" or lpd == "open":
         carries = "9100" if raw == "open" else "515"
-        lines.append(
-            f"\nThis printer takes print data on {carries} but does not answer IPP. That is"
-            "\nalmost certainly how your queue reaches it, and it is the answer: raw"
-            "\nprinting hands the printer bytes and tells it nothing, so there is no per-user"
-            "\njob history on the device for anything to read. ipp-joblog cannot help with"
-            "\nthis printer, and nor can any tool that asks the printer who printed."
-        )
-        if web:
-            lines.append(
-                "\nIts web interface is open, so it is worth a look: some printers ship with"
-                "\nIPP or AirPrint switched off, and turning it on is all that is missing."
-            )
-    elif ipp != "open" and web:
-        lines.append(
-            "\nIPP is closed but the web interface is open. Some printers let IPP or AirPrint"
-            "\nbe disabled there while ordinary printing keeps working; worth checking."
-        )
+        lines += [
+            "",
+            f"It takes print data on {carries} — raw printing, which hands the printer bytes",
+            "and tells it nothing about who sent them. No per-user history exists on the",
+            "device for any tool to read, so ipp-joblog cannot account for this printer.",
+        ]
+    if web:
+        ports = " and ".join(str(port) for port in web)
+        lines += [
+            "",
+            f"Its web interface is open ({ports}), so it is worth checking whether IPP or",
+            "AirPrint is simply switched off there.",
+        ]
     return lines
 
 
@@ -184,26 +181,9 @@ def issue_invitation(host: str) -> list[str]:
     """Turn a dead end into a useful bug report."""
     return [
         "",
-        "-" * 72,
-        "This printer cannot be accounted for as things stand. If you would like it",
-        "to be, please open an issue and paste everything above:",
-        f"  {ISSUES}",
-        "",
-        "It helps to say how you normally print to it -- `lpstat -v` names the device",
-        "URI for each queue -- and, if it retains no finished jobs, whether",
+        f"To report this printer: {ISSUES}",
+        "Please include everything above, how you print to it (`lpstat -v` names the",
+        "device URI for each queue), and — if it keeps no finished jobs — the output of:",
         f"  ipp-joblog --host {host} diagnose --watch 90",
-        "shows anything while you send a page to it.",
-        f"generated {datetime.now().astimezone():%Y-%m-%d %H:%M %z} by ipp-joblog",
-        "-" * 72,
-    ]
-
-
-def unreachable_report(host: str, timeout: float) -> list[str]:
-    """What to show when no endpoint answered at all."""
-    return [
-        "",
-        "Nothing answered, so there is nothing to ask. What is reachable:",
-        "",
-        *reachability(host, timeout),
-        f"  paths tried on any open port: {', '.join(COMMON_PATHS)}",
+        f"  (ipp-joblog {datetime.now().astimezone():%Y-%m-%d %H:%M %z})",
     ]

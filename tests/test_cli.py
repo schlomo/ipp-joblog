@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import pytest
 
 from ipp_joblog.cli import build_parser, main, parse_moment, report_poll
-from ipp_joblog.ipp import COMMON_PATHS, IppError
+from ipp_joblog.ipp import COMMON_PATHS, Attempt, IppError
 from ipp_joblog.jobs import Job
 from ipp_joblog.poller import Poller
 from ipp_joblog.store import SCHEMA_VERSION, JobStore
@@ -149,13 +149,12 @@ class StubProbeClient:
 
     def find_endpoint(self, paths=COMMON_PATHS, ports=(631,), on_attempt=None):
         for candidate in paths:
-            url = f"http://{self.host}:{self.port}{candidate}"
-            if candidate == self.working_path:
-                if on_attempt:
-                    on_attempt(url, None)
-                return self.port, candidate
+            found = candidate == self.working_path
             if on_attempt:
-                on_attempt(url, "client-error-not-found")
+                on_attempt(Attempt(self.port, False, candidate, None if found else "HTTP 404"))
+            if found:
+                self.path = candidate
+                return Attempt(self.port, False, candidate)
         raise IppError("no IPP endpoint answered")
 
     def printer_attributes(self):
@@ -169,6 +168,11 @@ def _probe(monkeypatch, groups, argv, **kwargs):
     monkeypatch.setattr(
         "ipp_joblog.cli.IppClient", lambda *a, **k: StubProbeClient(groups, **kwargs)
     )
+    # No DNS from the tests; the scan table is not what these assert on.
+    monkeypatch.setattr(
+        "ipp_joblog.diagnose.scan",
+        lambda host, timeout: dict.fromkeys((631, 80, 443, 9100, 515), "open"),
+    )
     return main(argv)
 
 
@@ -181,9 +185,10 @@ def test_probe_lists_every_url_it_tries(monkeypatch, attributes, capsys):
         == 0
     )
     captured = capsys.readouterr()
-    assert "http://printer.example:631/ipp/print" in captured.err
-    assert "http://printer.example:631/ipp/printer" in captured.err
-    assert "using IPP endpoint: ipp://printer.example:631/ipp/port1" in captured.err
+    assert "scanning printer.example" in captured.err
+    # One line per port rather than one per path: five paths is not five lines.
+    assert "631         answered IPP at /ipp/port1" in captured.err
+    assert "found IPP at ipp://printer.example:631/ipp/port1" in captured.err
     assert "can be accounted for" in captured.out  # the verdict is the data
 
 
@@ -223,7 +228,7 @@ def test_the_database_is_named_after_the_host_not_the_url(tmp_path):
 
 def test_probe_fails_when_the_printer_keeps_no_history(monkeypatch, capsys):
     assert _probe(monkeypatch, [], ["--host", "printer.example", "probe"]) == 1
-    assert "keeps no completed-job history" in capsys.readouterr().err
+    assert "keeps no completed-job history" in capsys.readouterr().out
 
 
 def test_probe_fails_when_a_required_attribute_is_missing(monkeypatch, attributes, capsys):
@@ -231,7 +236,7 @@ def test_probe_fails_when_a_required_attribute_is_missing(monkeypatch, attribute
     assert _probe(monkeypatch, [group], ["--host", "printer.example", "probe"]) == 1
     captured = capsys.readouterr()
     assert "NO   job-originating-user-name" in captured.out
-    assert "Missing required attribute" in captured.err
+    assert "Missing required attribute" in captured.out
 
 
 def test_probe_report_is_usable_when_everything_is_present(attributes):
