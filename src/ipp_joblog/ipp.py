@@ -251,6 +251,21 @@ def _decode_value(tag: int, raw: bytes) -> Any:
     return raw.decode("utf-8", "replace")
 
 
+def _take(data: bytes, offset: int, count: int) -> bytes:
+    """Read ``count`` octets, or say the response is not IPP.
+
+    Anything can answer an HTTP request with 200 and a body: a FRITZ!Box serves
+    its own web page on ``/``. Decoding that as IPP runs off the end, and a
+    struct error thrown from here is neither an IppError nor an OSError, so it
+    escapes every handler and kills the run instead of moving to the next
+    candidate endpoint.
+    """
+    chunk = data[offset : offset + count]
+    if len(chunk) < count:
+        raise IppError("not an IPP response: it ends mid-attribute")
+    return chunk
+
+
 def decode_response(data: bytes) -> tuple[int, list[dict[str, Attribute]]]:
     """Return ``(status_code, groups)`` where each group is name -> Attribute."""
     if len(data) < 8:
@@ -261,25 +276,27 @@ def decode_response(data: bytes) -> tuple[int, list[dict[str, Attribute]]]:
     current: dict[str, Attribute] | None = None
     previous: Attribute | None = None
     offset = 8
+    ended = False
 
     while offset < len(data):
         tag = data[offset]
         offset += 1
         if tag in DELIMITERS:
             if tag == Tag.END_OF_ATTRIBUTES:
+                ended = True
                 break
             current = {}
             groups.append(current)
             previous = None
             continue
 
-        name_length = struct.unpack(">H", data[offset : offset + 2])[0]
+        name_length = struct.unpack(">H", _take(data, offset, 2))[0]
         offset += 2
-        name = data[offset : offset + name_length].decode("utf-8", "replace")
+        name = _take(data, offset, name_length).decode("utf-8", "replace")
         offset += name_length
-        value_length = struct.unpack(">H", data[offset : offset + 2])[0]
+        value_length = struct.unpack(">H", _take(data, offset, 2))[0]
         offset += 2
-        raw = data[offset : offset + value_length]
+        raw = _take(data, offset, value_length)
         offset += value_length
 
         if current is None:  # values before any delimiter: malformed, ignore
@@ -291,6 +308,10 @@ def decode_response(data: bytes) -> tuple[int, list[dict[str, Attribute]]]:
         previous = Attribute(tag, name, [value])
         current[name] = previous
 
+    if not ended:
+        # Running out before the end-of-attributes tag means the body was cut
+        # short, or was never IPP to begin with. Either way it is not an answer.
+        raise IppError("not an IPP response: it ends before the attributes do")
     return status_code, groups
 
 
@@ -338,6 +359,13 @@ class IppClient:
         request = Request(self._http_url, data=body, headers={"Content-Type": IPP_CONTENT_TYPE})
         try:
             with urlopen(request, timeout=self._timeout, context=_TLS) as response:
+                # Plenty of things answer 200 with a body that is not IPP at all.
+                content_type = response.headers.get_content_type()
+                if content_type != IPP_CONTENT_TYPE:
+                    raise IppError(
+                        f"{operation.name}: {self._http_url} answered with "
+                        f"{content_type or 'no content type'}, not {IPP_CONTENT_TYPE}"
+                    )
                 payload = response.read()
         except HTTPError as error:
             raise IppError(f"{operation.name}: HTTP {error.code} from {self._http_url}") from error

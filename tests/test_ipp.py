@@ -213,3 +213,45 @@ def test_tls_is_tried_only_after_plain_http():
     order = _endpoint_order((631, 80, 443))
     assert order[:3] == [(631, False), (80, False), (443, True)]
     assert (631, True) in order[3:]  # a printer offering only IPPS on 631
+
+
+def test_a_web_page_is_not_mistaken_for_ipp():
+    """A FRITZ!Box serves its own page on / and answered 200 to an IPP request.
+
+    Decoding it ran off the end of the buffer, and the struct error that threw
+    is neither IppError nor OSError, so it escaped discovery's handler and
+    crashed the command instead of moving to the next candidate.
+    """
+    page = b"<html><head><title>FRITZ!Box</title></head><body>hi</body></html>"
+    with pytest.raises(IppError, match="not an IPP response"):
+        decode_response(page)
+
+
+@pytest.mark.parametrize("cut", range(9, 40))
+def test_no_truncation_escapes_as_something_other_than_an_ipp_error(get_jobs_response, cut):
+    """Whatever a device sends, discovery must be able to move on."""
+    with pytest.raises(IppError):
+        decode_response(get_jobs_response[:cut])
+
+
+def test_a_non_ipp_content_type_is_refused_before_decoding(monkeypatch):
+    """The precise guard: an HTML answer is rejected on its headers alone."""
+    import io
+    from email.message import Message
+
+    class Response(io.BytesIO):
+        headers = Message()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    page = Response(b"<html>not ipp</html>")
+    page.headers["Content-Type"] = "text/html; charset=utf-8"
+    monkeypatch.setattr("ipp_joblog.ipp.urlopen", lambda *a, **k: page)
+
+    client = IppClient("printer.example")
+    with pytest.raises(IppError, match="text/html, not application/ipp"):
+        client.printer_attributes()
