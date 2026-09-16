@@ -328,7 +328,7 @@ def test_report_output_is_clean_stdout(tmp_path, make_job, capsys):
 
 
 def test_notices_do_not_overtake_what_was_already_printed(monkeypatch):
-    """Piped, stdout buffers and stderr does not, so the two can arrive swapped."""
+    """Whatever is already on stdout goes out before the next line of stderr."""
     import sys
 
     from ipp_joblog.cli import notice

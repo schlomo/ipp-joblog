@@ -113,10 +113,9 @@ class Settings:
 def notice(message: str) -> None:
     """Operational messages go to stderr, so stdout stays pipeable data.
 
-    stderr is unbuffered while stdout is block-buffered as soon as it is not a
-    terminal, so anything already printed would surface after this line when
-    both are watched together. Flushing first keeps the two in the order they
-    were written.
+    Flushing stdout first means anything already printed is on its way out
+    before this line joins it. ``main`` also line-buffers stdout, which covers
+    the same ground; this is here for callers that did not come through it.
     """
     sys.stdout.flush()
     print(message, file=sys.stderr, flush=True)
@@ -531,12 +530,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Line-buffer stdout so it keeps step with stderr wherever both are read
-    # together. Python block-buffers it as soon as it is not a terminal, which
-    # would let a verdict sit in a buffer while the progress behind it went
-    # straight out. Buffering is only ours to control up to the process
-    # boundary: a container runtime reads the two pipes independently and can
-    # still interleave them.
+    # Line-buffer stdout so each line is on its way out as it is written,
+    # rather than waiting for a buffer to fill once stdout is not a terminal.
+    # That is as far as this reaches: a container runtime reads the two pipes
+    # independently and can interleave them whatever the process does, so
+    # ordering across the pair is not something this can promise.
     with contextlib.suppress(AttributeError):  # not every stdout can be reconfigured
         sys.stdout.reconfigure(line_buffering=True)
 
