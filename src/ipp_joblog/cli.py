@@ -221,7 +221,11 @@ def connect(settings: Settings, *, quiet: bool = False) -> IppClient:
     """
     target = settings.target
     client = IppClient(
-        target.host, timeout=settings.timeout, port=target.port or 631, path=target.path
+        target.host,
+        timeout=settings.timeout,
+        port=target.port or 631,
+        path=target.path,
+        secure=target.secure,
     )
     if target.pinned:
         if not quiet:
@@ -247,7 +251,7 @@ def configuration_advice(client: IppClient) -> list[str]:
     """How to keep using an endpoint that was not the obvious one."""
     if (client.port, client.path) == (631, COMMON_PATHS[0]):
         return []
-    url = f"{'ipps' if client.port == 443 else 'ipp'}://{client.host}:{client.port}{client.path}"
+    url = client.printer_uri
     return [
         "",
         f"This printer answers on port {client.port} at {client.path}, not where printers",
@@ -270,7 +274,11 @@ def reach(settings: Settings) -> IppClient:
         notice(f"could not find an IPP endpoint yet ({error}); will keep trying")
         target = settings.target
         return IppClient(
-            target.host, timeout=settings.timeout, port=target.port or 631, path=target.path
+            target.host,
+            timeout=settings.timeout,
+            port=target.port or 631,
+            path=target.path,
+            secure=target.secure,
         )
 
 

@@ -179,3 +179,37 @@ def test_port_443_is_spoken_over_tls():
 
 def test_client_normalises_a_path_without_a_leading_slash():
     assert IppClient("printer.example", path="ipp/port1").printer_uri.endswith("/ipp/port1")
+
+
+def test_tls_is_spoken_but_not_verified():
+    """Every printer presents a self-signed certificate; verifying rejects them all."""
+    import ssl
+
+    from ipp_joblog.ipp import _TLS
+
+    assert _TLS.verify_mode == ssl.CERT_NONE
+    assert _TLS.check_hostname is False
+
+
+def test_the_scheme_can_be_stated_rather_than_guessed():
+    """IPPS on 631 is legal and a port number cannot describe it."""
+    from ipp_joblog.ipp import parse_target
+
+    stated = parse_target("ipps://printer:631/ipp/print")
+    assert (stated.port, stated.secure) == (631, True)
+
+    client = IppClient("printer", port=631, secure=True)
+    assert client.printer_uri == "ipps://printer:631/ipp/print"
+    assert client._http_url == "https://printer:631/ipp/print"
+
+    assert parse_target("printer:443").secure is None  # unstated: the port decides
+    assert IppClient("printer", port=443).over_tls is True
+
+
+def test_tls_is_tried_only_after_plain_http():
+    """Nearly every printer wants plain HTTP; TLS-only ones must still be found."""
+    from ipp_joblog.ipp import _endpoint_order
+
+    order = _endpoint_order((631, 80, 443))
+    assert order[:3] == [(631, False), (80, False), (443, True)]
+    assert (631, True) in order[3:]  # a printer offering only IPPS on 631

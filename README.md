@@ -229,7 +229,13 @@ Three things are not guaranteed by the standard:
 
    ```bash
    ipp-joblog --host ipp://printer.example:631/ipp/print probe
+   ipp-joblog --host ipps://printer.example/ipp/print probe   # TLS
    ```
+
+   TLS certificates are not verified. Printers present self-signed ones
+   universally, so verifying would reject every printer there is. Nothing is
+   given up by that here: this tool only reads, sends no credentials, and
+   trusts nothing it receives beyond parsing it.
 
    A complete address skips the scan; anything less just narrows it. The
    database is always named after the host, so however you write the address it

@@ -7,6 +7,7 @@ implemented, so the whole thing stays small enough to test byte for byte.
 from __future__ import annotations
 
 import socket
+import ssl
 import struct
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -36,11 +37,17 @@ SCHEME_PORTS = {"ipp": 631, "ipps": 443, "http": 80, "https": 443}
 
 @dataclass(frozen=True, slots=True)
 class Target:
-    """Where to find a printer: a host, and optionally how to reach it."""
+    """Where to find a printer: a host, and optionally how to reach it.
+
+    ``secure`` is ``None`` when the address did not say, leaving the port to
+    decide. Stated outright it wins: a printer offering IPPS on 631 is legal
+    and cannot be described by a port number alone.
+    """
 
     host: str
     port: int | None = None
     path: str | None = None
+    secure: bool | None = None
 
     @property
     def pinned(self) -> bool:
@@ -58,15 +65,26 @@ def parse_target(value: str) -> Target:
     text = value.strip()
     if "://" in text:
         parts = urlsplit(text)
+        scheme = parts.scheme.lower()
         return Target(
             host=parts.hostname or "",
-            port=parts.port or SCHEME_PORTS.get(parts.scheme.lower()),
+            port=parts.port or SCHEME_PORTS.get(scheme),
             path=parts.path if parts.path not in ("", "/") else None,
+            secure=scheme in ("ipps", "https") if scheme in SCHEME_PORTS else None,
         )
     host, separator, port = text.rpartition(":")
     if separator and port.isdigit() and ":" not in host:  # not an IPv6 literal
         return Target(host=host, port=int(port))
     return Target(host=text)
+
+
+# Printers present self-signed certificates, universally, so verifying would
+# reject every one of them. This tool only reads, sends no credentials, and
+# trusts nothing it gets back beyond parsing it, so an unverified channel gives
+# up nothing it had. TLS is still worth speaking: some printers offer only it.
+_TLS = ssl.create_default_context()
+_TLS.check_hostname = False
+_TLS.verify_mode = ssl.CERT_NONE
 
 
 def port_state(host: str, port: int, timeout: float = PORT_PROBE_TIMEOUT) -> str:
@@ -84,6 +102,16 @@ def port_state(host: str, port: int, timeout: float = PORT_PROBE_TIMEOUT) -> str
         return "unknown host"
     except OSError:
         return "no answer"
+
+
+def _endpoint_order(ports: tuple[int, ...]) -> list[tuple[int, bool]]:
+    """Ports paired with how to speak to them, likeliest first.
+
+    Plain HTTP on every port before TLS on any, since that is what nearly all
+    printers want -- but TLS afterwards, because a printer offering only IPPS
+    is otherwise invisible.
+    """
+    return [(port, port == 443) for port in ports] + [(port, True) for port in ports if port != 443]
 
 
 def _normalise_path(path: str | None) -> str:
@@ -276,21 +304,27 @@ class IppClient:
         timeout: float = 20.0,
         port: int = 631,
         path: str | None = None,
+        secure: bool | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.path = _normalise_path(path)
+        #: None means "decide from the port"; stated outright it wins.
+        self.secure = secure
         self._timeout = timeout
         self._request_id = 0
 
     @property
     def printer_uri(self) -> str:
-        scheme = "ipps" if self.port == 443 else "ipp"
-        return f"{scheme}://{self.host}:{self.port}{self.path}"
+        return f"{'ipps' if self.over_tls else 'ipp'}://{self.host}:{self.port}{self.path}"
+
+    @property
+    def over_tls(self) -> bool:
+        return self.port == 443 if self.secure is None else self.secure
 
     @property
     def scheme(self) -> str:
-        return "https" if self.port == 443 else "http"
+        return "https" if self.over_tls else "http"
 
     @property
     def _http_url(self) -> str:
@@ -303,7 +337,7 @@ class IppClient:
         body = encode_request(operation, self._request_id, attributes)
         request = Request(self._http_url, data=body, headers={"Content-Type": IPP_CONTENT_TYPE})
         try:
-            with urlopen(request, timeout=self._timeout) as response:
+            with urlopen(request, timeout=self._timeout, context=_TLS) as response:
                 payload = response.read()
         except HTTPError as error:
             raise IppError(f"{operation.name}: HTTP {error.code} from {self._http_url}") from error
@@ -349,10 +383,10 @@ class IppClient:
         path, and the caller learns that nothing was listening at all -- which
         is the difference between "wrong path" and "not an IPP printer".
         """
-        original = (self.port, self.path)
+        original = (self.port, self.path, self.secure)
         try:
-            for port in ports:
-                self.port = port
+            for port, secure in _endpoint_order(ports):
+                self.port, self.secure = port, secure
                 state = port_state(self.host, port, min(self._timeout, PORT_PROBE_TIMEOUT))
                 if state != "open":
                     if on_attempt:
@@ -370,7 +404,7 @@ class IppClient:
                         on_attempt(self._http_url, None)
                     return port, candidate
         finally:
-            self.port, self.path = original
+            self.port, self.path, self.secure = original
         raise IppError(
             f"no IPP endpoint answered on {self.host}; tried ports "
             f"{', '.join(str(port) for port in ports)} and paths {', '.join(paths)}"
