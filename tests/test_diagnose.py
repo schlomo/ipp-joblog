@@ -87,8 +87,49 @@ def test_probe_diagnoses_itself_when_nothing_answers(refused, capsys, tmp_path):
     captured = capsys.readouterr()
     assert "scanning 192.0.2.10" in captured.err  # progress on stderr
     assert "probably not the printer" in captured.out  # the answer on stdout
-    assert ISSUES in captured.out
-    assert "diagnose --watch 90" in captured.out
+    assert ISSUES not in captured.out  # the wrong address is not a bug to file
+
+
+def test_a_conclusive_answer_asks_for_nothing(monkeypatch, capsys, tmp_path):
+    """Raw printing is a complete explanation; there is nothing left to send."""
+    states(monkeypatch, {9100, 80})
+    monkeypatch.setattr(
+        "ipp_joblog.ipp.port_state", lambda h, p, t: "open" if p in (9100, 80) else "refused"
+    )
+    # 192.0.2.0/24 is documentation space and black-holes, so a real request
+    # would wait out the full timeout on every candidate path.
+    monkeypatch.setattr(
+        "ipp_joblog.ipp.urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("timed out"))
+    )
+    assert main(["--state-dir", str(tmp_path), "--host", "192.0.2.10", "probe"]) == 1
+    out = capsys.readouterr().out
+    assert "cannot account for this printer" in out
+    assert ISSUES not in out  # nothing to report: it works as designed
+    assert "diagnose --watch" not in out  # and no endpoint to watch it on
+
+
+def test_ipp_switched_off_asks_only_if_turning_it_on_does_not_help(monkeypatch):
+    """Here a report would help, but only after the obvious fix is ruled out."""
+    states(monkeypatch, {80, 443})
+    text = said("192.0.2.10")
+    assert "switched off there" in text
+    assert "If you turn IPP on and it still does not answer" in text
+    assert ISSUES in text
+
+
+def test_reaching_ipp_and_failing_is_worth_reporting():
+    """The one case that is a gap here rather than a fact about the device."""
+    from ipp_joblog.diagnose import issue_invitation
+
+    asked = "\n".join(issue_invitation("printer.example"))
+    assert "answers IPP but cannot be accounted for" in asked
+    assert "diagnose --watch 90" in asked
+    assert "lpstat" not in asked  # we already know it speaks IPP
+    assert ISSUES in asked
+
+    # With no endpoint to reach, there is nothing to watch either.
+    unreachable = "\n".join(issue_invitation("printer.example", can_watch=False))
+    assert "diagnose --watch" not in unreachable
 
 
 def test_a_printer_on_an_unusual_port_is_told_how_to_keep_using_it(monkeypatch, capsys):

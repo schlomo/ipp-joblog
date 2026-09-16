@@ -8,7 +8,6 @@ to be installed alongside the container to get it.
 from __future__ import annotations
 
 import time
-from datetime import datetime
 
 from ipp_joblog.ipp import (
     COMMON_PORTS,
@@ -58,6 +57,21 @@ def port_table(states: dict[int, str]) -> list[str]:
     return [f"  {port:<5} {states[port]:<9} {what}" for port, what in DIAGNOSTIC_PORTS]
 
 
+def explained(states: dict[int, str]) -> bool:
+    """Whether the scan already accounts for the failure.
+
+    A device that takes raw print data and refuses IPP is working exactly as
+    designed, and one that refuses everything is the wrong address. Neither is
+    a gap in this tool, so neither is worth a bug report -- asking for one
+    would be asking someone to file "my router is a router".
+    """
+    if all(state == "unknown host" for state in states.values()):
+        return True
+    if not any(state == "open" for state in states.values()):
+        return True
+    return states[9100] == "open" or states[515] == "open"
+
+
 def verdict(host: str, states: dict[int, str]) -> list[str]:
     """What the pattern of open ports means, said once."""
     raw, lpd = states[9100], states[515]
@@ -93,6 +107,10 @@ def verdict(host: str, states: dict[int, str]) -> list[str]:
             f"Its web interface is open ({ports}), so it is worth checking whether IPP or",
             "AirPrint is simply switched off there.",
         ]
+        if not explained(states):
+            lines += [
+                f"If you turn IPP on and it still does not answer, please report it: {ISSUES}",
+            ]
     return lines
 
 
@@ -177,13 +195,23 @@ def watch(client: IppClient, seconds: float) -> list[str]:
     return lines
 
 
-def issue_invitation(host: str) -> list[str]:
-    """Turn a dead end into a useful bug report."""
-    return [
+def issue_invitation(host: str, *, can_watch: bool = True) -> list[str]:
+    """Ask for a report, but only where one would tell us something new.
+
+    Worth asking when the printer answered IPP and still could not be used:
+    that is a gap here, and the model is a data point. Not worth asking when
+    the scan already explained itself.
+    """
+    lines = [
         "",
-        f"To report this printer: {ISSUES}",
-        "Please include everything above, how you print to it (`lpstat -v` names the",
-        "device URI for each queue), and — if it keeps no finished jobs — the output of:",
-        f"  ipp-joblog --host {host} diagnose --watch 90",
-        f"  (ipp-joblog {datetime.now().astimezone():%Y-%m-%d %H:%M %z})",
+        f"This printer answers IPP but cannot be accounted for. Please report it: {ISSUES}",
+        "Include everything above, and the model and firmware if the report lists them.",
     ]
+    if can_watch:
+        lines += [
+            "",
+            "Some printers show a job only while it is printing. If this one keeps no",
+            "finished jobs, this says whether anything is visible at all:",
+            f"  ipp-joblog --host {host} diagnose --watch 90",
+        ]
+    return lines

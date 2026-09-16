@@ -337,9 +337,13 @@ def command_probe(settings: Settings) -> int:
         client = connect(settings)
     except (IppError, OSError):
         host = settings.target.host
+        states = connect.last_scan
         print("")
-        print("\n".join(diagnostics.verdict(host, connect.last_scan)))
-        print("\n".join(diagnostics.issue_invitation(host)))
+        print("\n".join(diagnostics.verdict(host, states)))
+        # Nothing to report when the scan already explained itself, and nothing
+        # to watch when there is no IPP endpoint to watch it on.
+        if not diagnostics.explained(states):
+            print("\n".join(diagnostics.issue_invitation(host, can_watch=False)))
         return 1
 
     report = probe(client)
