@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import os
 import sys
 import time
@@ -530,6 +531,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Line-buffer stdout so it keeps step with stderr wherever both are read
+    # together. Python block-buffers it as soon as it is not a terminal, which
+    # would let a verdict sit in a buffer while the progress behind it went
+    # straight out. Buffering is only ours to control up to the process
+    # boundary: a container runtime reads the two pipes independently and can
+    # still interleave them.
+    with contextlib.suppress(AttributeError):  # not every stdout can be reconfigured
+        sys.stdout.reconfigure(line_buffering=True)
+
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.needs_host and not args.host:

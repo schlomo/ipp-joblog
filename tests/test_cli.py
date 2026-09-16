@@ -354,3 +354,41 @@ def test_notices_do_not_overtake_what_was_already_printed(monkeypatch):
     )
     notice("progress")
     assert order == ["stdout flushed", "stderr written"]
+
+
+def test_stdout_is_line_buffered_so_it_keeps_step_with_stderr(monkeypatch, tmp_path):
+    """Block-buffered stdout would let an answer lag behind the progress for it."""
+    import sys
+
+    asked: dict[str, object] = {}
+
+    class Stdout:
+        def reconfigure(self, **kwargs):
+            asked.update(kwargs)
+
+        def write(self, text):
+            return len(text)
+
+        def flush(self):
+            return None
+
+    monkeypatch.setattr(sys, "stdout", Stdout())
+    main(["--state-dir", str(tmp_path), "report"])
+    assert asked == {"line_buffering": True}
+
+
+def test_a_stdout_that_cannot_be_reconfigured_is_not_fatal(monkeypatch, tmp_path, make_job):
+    """Not every stdout has reconfigure: pytest's capture replaces it, and so do pipes."""
+    import sys
+
+    JobStore(tmp_path / "printer.sqlite3").add([make_job()])
+
+    class Plain:  # no reconfigure at all
+        def write(self, text):
+            return len(text)
+
+        def flush(self):
+            return None
+
+    monkeypatch.setattr(sys, "stdout", Plain())
+    assert main(["--state-dir", str(tmp_path), "report"]) == 0
