@@ -21,13 +21,42 @@ def silent(monkeypatch):
     monkeypatch.setattr("ipp_joblog.diagnose.port_state", lambda *a, **k: "no answer")
 
 
-def test_refused_everywhere_points_at_the_print_queue(refused):
+def states(monkeypatch, open_ports):
+    """Pretend a particular set of ports is open and the rest refuse."""
+    monkeypatch.setattr(
+        "ipp_joblog.diagnose.port_state",
+        lambda host, port, timeout: "open" if port in open_ports else "refused",
+    )
+
+
+def test_raw_printing_without_ipp_is_the_whole_answer(monkeypatch):
+    """A printer that takes bytes on 9100 but no IPP keeps no job history to read."""
+    states(monkeypatch, {9100, 80})
+    text = "\n".join(reachability("192.0.2.10", timeout=1))
+    assert "9100  open" in text
+    assert "no per-user" in text and "job history" in text
+    assert "cannot help with" in text  # said plainly rather than left to infer
+    assert "web interface is open" in text  # ...but IPP may just be switched off
+
+
+def test_lpd_counts_as_raw_printing_too(monkeypatch):
+    states(monkeypatch, {515})
+    assert "job history" in "\n".join(reachability("192.0.2.10", timeout=1))
+
+
+def test_ipp_closed_but_web_open_suggests_a_setting(monkeypatch):
+    states(monkeypatch, {80})
+    text = "\n".join(reachability("192.0.2.10", timeout=1))
+    assert "disabled there" in text
+    assert "job history" not in text  # nothing suggests raw printing here
+
+
+def test_every_port_refused_means_it_is_probably_not_the_printer(refused):
     """An EPSON L3150 refused all IPP ports while printing happily over CUPS."""
     text = "\n".join(reachability("192.0.2.10", timeout=1))
-    assert "port 631   refused" in text
-    assert "does not speak IPP" in text
-    assert "lpstat -v" in text  # how to find out what it does speak
-    assert "socket://" in text and "usb://" in text  # and what those answers mean
+    assert "631   refused" in text
+    assert "probably not the printer" in text
+    assert "may have moved" in text  # Wi-Fi printer on DHCP
 
 
 def test_a_silent_host_is_a_different_problem(silent):
@@ -44,7 +73,7 @@ def test_an_unknown_name_says_so(monkeypatch):
 def test_the_unreachable_report_lists_what_was_tried(refused):
     text = "\n".join(unreachable_report("192.0.2.10", timeout=1))
     assert "/ipp/print" in text
-    assert "port 443" in text
+    assert "443" in text and "9100" in text
 
 
 def test_probe_diagnoses_itself_when_nothing_answers(refused, capsys, tmp_path):
@@ -52,6 +81,6 @@ def test_probe_diagnoses_itself_when_nothing_answers(refused, capsys, tmp_path):
     assert main(["--state-dir", str(tmp_path), "--host", "192.0.2.10", "probe"]) == 1
     captured = capsys.readouterr()
     assert "no IPP endpoint answered" in captured.err
-    assert "port 631   refused" in captured.out
+    assert "631   refused" in captured.out
     assert ISSUES in captured.out
     assert "diagnose --watch 90" in captured.out

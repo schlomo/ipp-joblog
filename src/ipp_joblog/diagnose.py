@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from ipp_joblog.ipp import COMMON_PATHS, COMMON_PORTS, Attribute, IppClient, IppError, port_state
+from ipp_joblog.ipp import COMMON_PATHS, Attribute, IppClient, IppError, port_state
 
 ISSUES = "https://github.com/schlomo/ipp-joblog/issues/new"
 
@@ -18,27 +18,58 @@ ISSUES = "https://github.com/schlomo/ipp-joblog/issues/new"
 JOB_QUEUES = ("completed", "not-completed", "not_completed")
 
 
-def reachability(host: str, timeout: float, ports: tuple[int, ...] = COMMON_PORTS) -> list[str]:
-    """What is listening, and what that means."""
+# Beyond the ports IPP might live on, the ones that say what a printer *is*.
+# A printer that takes raw data but not IPP explains itself by being here.
+DIAGNOSTIC_PORTS = (
+    (631, "IPP, which is what this tool reads"),
+    (80, "web interface, and IPP on some printers"),
+    (443, "web interface over TLS, and IPPS on some printers"),
+    (9100, "raw printing (socket://, JetDirect)"),
+    (515, "LPD (lpd://)"),
+)
+
+
+def reachability(host: str, timeout: float) -> list[str]:
+    """What is listening, and what that says about the printer."""
+    states = {port: port_state(host, port, timeout) for port, _ in DIAGNOSTIC_PORTS}
     lines = [f"host: {host}"]
-    states = {port: port_state(host, port, timeout) for port in ports}
-    for port, state in states.items():
-        lines.append(f"  port {port:<5} {state}")
+    lines += [f"  {port:<5} {states[port]:<13} {what}" for port, what in DIAGNOSTIC_PORTS]
+
+    ipp, raw, lpd = states[631], states[9100], states[515]
+    web = "open" in (states[80], states[443])
 
     if all(state == "unknown host" for state in states.values()):
-        lines.append("\nThe name does not resolve. Check spelling, or use the IP address.")
-    elif all(state == "refused" for state in states.values()):
+        lines.append("\nThe name does not resolve. Check the spelling, or use the IP address.")
+    elif not any(state == "open" for state in states.values()):
+        if all(state == "refused" for state in states.values()):
+            lines.append(
+                "\nSomething is at that address and refuses every printing port, so it is"
+                "\nprobably not the printer. A printer on Wi-Fi and DHCP may have moved;"
+                "\ncheck the address on the printer itself."
+            )
+        else:
+            lines.append(
+                "\nNothing answered at all. If the printer sleeps deeply it may need waking;"
+                "\notherwise check this machine can reach it and that no firewall is between."
+            )
+    elif ipp != "open" and (raw == "open" or lpd == "open"):
+        carries = "9100" if raw == "open" else "515"
         lines.append(
-            "\nSomething is at that address but nothing is listening on any IPP port, so it"
-            "\nprobably does not speak IPP at all. Ask the print system how it reaches this"
-            "\nprinter -- `lpstat -v` on macOS or Linux prints the device URI for each queue."
-            "\nA socket:// or usb:// URI means the printer is fed raw data and keeps no job"
-            "\nhistory to read; an ipp:// URI names the host and port that do work."
+            f"\nThis printer takes print data on {carries} but does not answer IPP. That is"
+            "\nalmost certainly how your queue reaches it, and it is the answer: raw"
+            "\nprinting hands the printer bytes and tells it nothing, so there is no per-user"
+            "\njob history on the device for anything to read. ipp-joblog cannot help with"
+            "\nthis printer, and nor can any tool that asks the printer who printed."
         )
-    elif all(state != "open" for state in states.values()):
+        if web:
+            lines.append(
+                "\nIts web interface is open, so it is worth a look: some printers ship with"
+                "\nIPP or AirPrint switched off, and turning it on is all that is missing."
+            )
+    elif ipp != "open" and web:
         lines.append(
-            "\nNothing answered. If the printer sleeps deeply it may need waking; otherwise"
-            "\ncheck that this machine can reach it, and that no firewall sits between them."
+            "\nIPP is closed but the web interface is open. Some printers let IPP or AirPrint"
+            "\nbe disabled there while ordinary printing keeps working; worth checking."
         )
     return lines
 

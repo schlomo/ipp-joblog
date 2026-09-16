@@ -224,10 +224,13 @@ Three things are not guaranteed by the standard:
    checking each port for a listener first, and `--path` (or `IPP_PATH`) pins
    one.
 
-If a printer refuses every IPP port while printing perfectly well, it is
-probably not being printed to over IPP at all. `lpstat -v` names the device URI
-for each queue: a `socket://` or `usb://` URI means the printer is fed raw data
-and keeps no job history for anyone to read.
+When a printer cannot be reached, `probe` scans the ports that say what it is —
+631, 80, 443, 9100 and 515 — and reads the shape. A printer that takes data on
+9100 or 515 but refuses IPP is being fed raw bytes: it is told nothing about who
+printed, so there is no per-user history on the device for anything to read, and
+the report says so rather than leaving you to work it out. IPP closed with the
+web interface open usually means IPP or AirPrint is switched off in its settings.
+Everything refused usually means the address is no longer the printer.
 
 Job identity adapts too: a real `job-uuid` when the printer sets one, else
 printer uptime plus `job-id`, else the creation timestamp plus `job-id`, else
