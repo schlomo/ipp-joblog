@@ -6,6 +6,7 @@ implemented, so the whole thing stays small enough to test byte for byte.
 
 from __future__ import annotations
 
+import socket
 import struct
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -20,6 +21,28 @@ IPP_CONTENT_TYPE = "application/ipp"
 # The IPP resource path is not standardised. These cover AirPrint/IPP Everywhere
 # printers, CUPS queues and older HP Jetdirect firmware.
 COMMON_PATHS = ("/ipp/print", "/ipp/printer", "/ipp/port1", "/", "/printers/print")
+
+# 631 is IPP's own port. Some printers answer IPP on their web ports instead,
+# and a few only over TLS, so those are worth a look before giving up.
+COMMON_PORTS = (631, 80, 443)
+PORT_PROBE_TIMEOUT = 3.0
+
+
+def port_state(host: str, port: int, timeout: float = PORT_PROBE_TIMEOUT) -> str:
+    """Whether anything is listening, before spending a request finding out.
+
+    Worth distinguishing: a refused port means the host is there and has
+    nothing on it, which is a different problem from a host that never answers.
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return "open"
+    except ConnectionRefusedError:
+        return "refused"
+    except socket.gaierror:
+        return "unknown host"
+    except OSError:
+        return "no answer"
 
 
 def _normalise_path(path: str | None) -> str:
@@ -221,11 +244,16 @@ class IppClient:
 
     @property
     def printer_uri(self) -> str:
-        return f"ipp://{self.host}:{self.port}{self.path}"
+        scheme = "ipps" if self.port == 443 else "ipp"
+        return f"{scheme}://{self.host}:{self.port}{self.path}"
+
+    @property
+    def scheme(self) -> str:
+        return "https" if self.port == 443 else "http"
 
     @property
     def _http_url(self) -> str:
-        return f"http://{self.host}:{self.port}{self.path}"
+        return f"{self.scheme}://{self.host}:{self.port}{self.path}"
 
     def _request(
         self, operation: Operation, attributes: list[tuple[int, str, list[Any]]]
@@ -267,32 +295,42 @@ class IppClient:
         groups = self._request(Operation.GET_PRINTER_ATTRIBUTES, self._base_attributes())
         return groups[-1] if len(groups) > 1 else {}
 
-    def find_path(
+    def find_endpoint(
         self,
-        candidates: tuple[str, ...] = COMMON_PATHS,
+        paths: tuple[str, ...] = COMMON_PATHS,
+        ports: tuple[int, ...] = COMMON_PORTS,
         on_attempt: Callable[[str, str | None], None] | None = None,
-    ) -> str:
-        """Return the first resource path that answers Get-Printer-Attributes.
+    ) -> tuple[int, str]:
+        """Find where this printer speaks IPP, as ``(port, path)``.
 
-        The path is vendor-specific, so a printer that ignores ``/ipp/print``
-        may still speak IPP somewhere else. ``on_attempt`` is called with the
-        URL tried and the failure reason, or ``None`` once one works.
+        Both halves are vendor-specific. Each port is checked for a listener
+        first, so a closed one costs a connection rather than a request per
+        path, and the caller learns that nothing was listening at all -- which
+        is the difference between "wrong path" and "not an IPP printer".
         """
-        original = self.path
+        original = (self.port, self.path)
         try:
-            for candidate in candidates:
-                self.path = candidate
-                try:
-                    self.printer_attributes()
-                except (IppError, OSError) as error:
+            for port in ports:
+                self.port = port
+                state = port_state(self.host, port, min(self._timeout, PORT_PROBE_TIMEOUT))
+                if state != "open":
                     if on_attempt:
-                        on_attempt(self._http_url, str(error))
+                        on_attempt(f"{self.scheme}://{self.host}:{port}", state)
                     continue
-                if on_attempt:
-                    on_attempt(self._http_url, None)
-                return candidate
+                for candidate in paths:
+                    self.path = candidate
+                    try:
+                        self.printer_attributes()
+                    except (IppError, OSError) as error:
+                        if on_attempt:
+                            on_attempt(self._http_url, str(error))
+                        continue
+                    if on_attempt:
+                        on_attempt(self._http_url, None)
+                    return port, candidate
         finally:
-            self.path = original
+            self.port, self.path = original
         raise IppError(
-            f"no IPP endpoint answered on {self.host}:{self.port}; tried {', '.join(candidates)}"
+            f"no IPP endpoint answered on {self.host}; tried ports "
+            f"{', '.join(str(port) for port in ports)} and paths {', '.join(paths)}"
         )

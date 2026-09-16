@@ -108,28 +108,35 @@ def test_no_value_tag_decodes_to_none(job_groups):
 class StubClient(IppClient):
     """An IppClient whose only working endpoint is ``working_path``."""
 
-    def __init__(self, working_path: str | None) -> None:
+    def __init__(self, working_path: str | None, working_port: int = 631) -> None:
         super().__init__("printer.example")
         self.working_path = working_path
-        self.tried: list[str] = []
+        self.working_port = working_port
+        self.tried: list[tuple[int, str]] = []
 
     def printer_attributes(self):
-        self.tried.append(self.path)
-        if self.path != self.working_path:
+        self.tried.append((self.port, self.path))
+        if (self.port, self.path) != (self.working_port, self.working_path):
             raise IppError("client-error-not-found")
         return {}
 
 
-def test_find_path_returns_the_first_endpoint_that_answers():
+@pytest.fixture
+def every_port_open(monkeypatch):
+    """Skip the TCP check; these tests are about paths, not listeners."""
+    monkeypatch.setattr("ipp_joblog.ipp.port_state", lambda *args, **kwargs: "open")
+
+
+def test_find_endpoint_returns_the_first_that_answers(every_port_open):
     client = StubClient("/ipp/port1")
-    assert client.find_path() == "/ipp/port1"
-    assert client.tried == ["/ipp/print", "/ipp/printer", "/ipp/port1"]
+    assert client.find_endpoint() == (631, "/ipp/port1")
+    assert [path for _, path in client.tried] == ["/ipp/print", "/ipp/printer", "/ipp/port1"]
 
 
-def test_find_path_reports_every_url_it_tries():
+def test_find_endpoint_reports_every_url_it_tries(every_port_open):
     client = StubClient("/ipp/port1")
     seen: list[tuple[str, str | None]] = []
-    client.find_path(on_attempt=lambda url, failure: seen.append((url, failure)))
+    client.find_endpoint(on_attempt=lambda url, failure: seen.append((url, failure)))
     assert [url for url, _ in seen] == [
         "http://printer.example:631/ipp/print",
         "http://printer.example:631/ipp/printer",
@@ -138,11 +145,36 @@ def test_find_path_reports_every_url_it_tries():
     assert [failure is None for _, failure in seen] == [False, False, True]
 
 
-def test_find_path_restores_the_original_path_on_failure():
+def test_find_endpoint_tries_other_ports(every_port_open):
+    """Some printers answer IPP on their web port instead of 631."""
+    client = StubClient("/ipp/print", working_port=80)
+    assert client.find_endpoint() == (80, "/ipp/print")
+    assert {port for port, _ in client.tried} == {631, 80}
+
+
+def test_a_port_with_no_listener_costs_no_requests(monkeypatch):
+    """A refused port is reported once, not once per candidate path."""
+    monkeypatch.setattr(
+        "ipp_joblog.ipp.port_state", lambda host, port, *a, **k: "open" if port == 80 else "refused"
+    )
+    client = StubClient("/ipp/print", working_port=80)
+    seen: list[tuple[str, str | None]] = []
+    client.find_endpoint(on_attempt=lambda url, failure: seen.append((url, failure)))
+    assert ("http://printer.example:631", "refused") in seen
+    assert all(port == 80 for port, _ in client.tried)  # 631 never got a request
+
+
+def test_find_endpoint_restores_the_original_endpoint_on_failure(every_port_open):
     client = StubClient(None)
     with pytest.raises(IppError, match="no IPP endpoint answered"):
-        client.find_path()
-    assert client.path == COMMON_PATHS[0]
+        client.find_endpoint()
+    assert (client.port, client.path) == (631, COMMON_PATHS[0])
+
+
+def test_port_443_is_spoken_over_tls():
+    client = IppClient("printer.example", port=443)
+    assert client.printer_uri.startswith("ipps://")
+    assert client._http_url.startswith("https://")
 
 
 def test_client_normalises_a_path_without_a_leading_slash():

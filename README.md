@@ -101,7 +101,8 @@ uv sync && uv run ipp-joblog probe
 
 | Command | What it does |
 | --- | --- |
-| `probe` | Reports every endpoint URL it tries and every attribute the printer returns, then says whether the printer can be accounted for. Run this first. |
+| `probe` | Reports every endpoint it tries and every attribute the printer returns, then says whether the printer can be accounted for. Run this first. If the answer is no, it dumps the full diagnostic itself and tells you where to report it. |
+| `diagnose` | Everything a printer will say, for a bug report. `--watch 90` instead polls hard while you print, for printers that retain no finished jobs. |
 | `serve` | Poll on an interval, write the dashboard, serve it over HTTP. |
 | `watch` | Poll on an interval and log new jobs. `--html-dir` also writes the page, for serving behind your own web server. |
 | `poll` | Fetch once and store new jobs. Safe to re-run; ideal for cron. |
@@ -216,10 +217,17 @@ Three things are not guaranteed by the standard:
    `job-media-sheets-completed` are not, and `print-color-mode` comes from
    PWG 5100.13 rather than the core spec. Missing attributes degrade to zero
    rather than crashing; `probe` lists which ones a printer actually reports.
-3. **The resource path is vendor-specific.** `/ipp/print` covers AirPrint and
-   IPP Everywhere devices; CUPS queues and older firmware use something else.
-   `probe` walks the candidates in `COMMON_PATHS`, and `--path` (or
-   `IPP_PATH`) pins one.
+3. **The endpoint is vendor-specific**, in both halves. `/ipp/print` covers
+   AirPrint and IPP Everywhere devices; CUPS queues and older firmware use
+   something else, and a few printers answer IPP on their web port rather than
+   631. `probe` walks ports 631, 80 and 443 against the candidate paths,
+   checking each port for a listener first, and `--path` (or `IPP_PATH`) pins
+   one.
+
+If a printer refuses every IPP port while printing perfectly well, it is
+probably not being printed to over IPP at all. `lpstat -v` names the device URI
+for each queue: a `socket://` or `usb://` URI means the printer is fed raw data
+and keeps no job history for anyone to read.
 
 Job identity adapts too: a real `job-uuid` when the printer sets one, else
 printer uptime plus `job-id`, else the creation timestamp plus `job-id`, else

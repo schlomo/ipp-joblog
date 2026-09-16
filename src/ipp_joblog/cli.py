@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ipp_joblog.ipp import COMMON_PATHS, IppClient, IppError
+from ipp_joblog import diagnose as diagnostics
+from ipp_joblog.ipp import COMMON_PATHS, COMMON_PORTS, IppClient, IppError
 from ipp_joblog.jobs import PrinterJobLog
 from ipp_joblog.output import job_line, jobs_csv, totals_csv, totals_json, totals_table
 from ipp_joblog.poller import Poller, PollResult
@@ -52,6 +53,7 @@ class Settings:
     html_dir: Path | None = None
     port: int = DEFAULT_PORT
     bind: str = ""
+    watch_seconds: float = 0.0
     since: datetime | None = None
     until: datetime | None = None
     output_format: str = "text"
@@ -67,6 +69,7 @@ class Settings:
             html_dir=getattr(args, "html_dir", None),
             port=getattr(args, "port", DEFAULT_PORT),
             bind=getattr(args, "bind", ""),
+            watch_seconds=getattr(args, "watch", 0.0) or 0.0,
             since=getattr(args, "since", None),
             until=getattr(args, "until", None),
             output_format=getattr(args, "format", "text"),
@@ -205,23 +208,55 @@ def learn_about_printer(settings: Settings, store: JobStore) -> None:
         notice(f"could not read printer details: {error}")
 
 
-def command_probe(settings: Settings) -> int:
-    """Report whether this printer can actually be accounted for."""
+def connect(settings: Settings) -> IppClient:
+    """An IPP client aimed at wherever this printer actually listens."""
     client = IppClient(settings.host, timeout=settings.timeout)
     if settings.path:
         client.path = settings.path
         notice(f"using IPP endpoint (given): {client.printer_uri}")
-    else:
-        notice(f"probing {len(COMMON_PATHS)} candidate endpoints on {settings.host}:631")
-        client.path = client.find_path(on_attempt=_print_attempt)
-        notice(f"using IPP endpoint: {client.printer_uri}")
+        return client
+    notice(f"probing {settings.host} on ports {', '.join(map(str, COMMON_PORTS))}")
+    client.port, client.path = client.find_endpoint(on_attempt=_print_attempt)
+    notice(f"using IPP endpoint: {client.printer_uri}")
+    return client
+
+
+def command_probe(settings: Settings) -> int:
+    """Report whether this printer can actually be accounted for.
+
+    A printer that cannot be is worth more than an error, so the diagnostic
+    dump runs by itself: the report to paste into an issue is the output of the
+    command that just failed.
+    """
+    try:
+        client = connect(settings)
+    except (IppError, OSError) as error:
+        notice(f"error: {error}")
+        print("\n".join(diagnostics.unreachable_report(settings.host, settings.timeout)))
+        print("\n".join(diagnostics.issue_invitation(settings.host)))
+        return 1
 
     report = probe(client)
     print("\n".join(report.lines()))
-    if not report.usable:
-        notice(report.problem())
-        return 1
-    print("\nThis printer can be accounted for.")
+    if report.usable:
+        print("\nThis printer can be accounted for.")
+        return 0
+
+    notice(report.problem())
+    print("\nFull detail, since this printer did not give us what we need:\n")
+    print("\n".join(diagnostics.report(client)))
+    print("\n".join(diagnostics.issue_invitation(settings.host)))
+    return 1
+
+
+def command_diagnose(settings: Settings) -> int:
+    """Dump everything this printer will say, for a bug report."""
+    client = connect(settings)
+    if settings.watch_seconds:
+        print("\n".join(diagnostics.watch(client, settings.watch_seconds)))
+    else:
+        print("\n".join(diagnostics.report(client)))
+    print("\n".join(diagnostics.issue_invitation(settings.host)))
     return 0
 
 
@@ -331,6 +366,15 @@ def build_parser() -> argparse.ArgumentParser:
         return sub
 
     add("probe", command_probe, "check whether a printer can be accounted for")
+
+    diagnose = add("diagnose", command_diagnose, "dump everything a printer says, for a bug report")
+    diagnose.add_argument(
+        "--watch",
+        type=float,
+        metavar="SECONDS",
+        help="instead, poll hard for this long and show any job seen while it prints "
+        "(for printers that retain no finished jobs)",
+    )
     add("poll", command_poll, "fetch once and store new jobs")
 
     watch = add("watch", command_watch, "poll on an interval until interrupted")

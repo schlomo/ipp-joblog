@@ -147,13 +147,13 @@ class StubProbeClient:
     def printer_uri(self) -> str:
         return f"ipp://{self.host}:{self.port}{self.path}"
 
-    def find_path(self, candidates=COMMON_PATHS, on_attempt=None):
-        for candidate in candidates:
+    def find_endpoint(self, paths=COMMON_PATHS, ports=(631,), on_attempt=None):
+        for candidate in paths:
             url = f"http://{self.host}:{self.port}{candidate}"
             if candidate == self.working_path:
                 if on_attempt:
                     on_attempt(url, None)
-                return candidate
+                return self.port, candidate
             if on_attempt:
                 on_attempt(url, "client-error-not-found")
         raise IppError("no IPP endpoint answered")
