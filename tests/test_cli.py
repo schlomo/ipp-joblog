@@ -187,12 +187,38 @@ def test_probe_lists_every_url_it_tries(monkeypatch, attributes, capsys):
     assert "can be accounted for" in captured.out  # the verdict is the data
 
 
-def test_probe_skips_discovery_when_a_path_is_given(monkeypatch, attributes, capsys):
+def test_a_full_address_skips_discovery(monkeypatch, attributes, capsys):
+    """A URL answers both questions, so there is nothing left to scan for."""
     group = attributes(job_id=1, job_originating_user_name="alice", job_impressions_completed=2)
-    _probe(monkeypatch, [group], ["--host", "printer.example", "--path", "/ipp/print", "probe"])
+    _probe(monkeypatch, [group], ["--host", "ipp://printer.example/ipp/print", "probe"])
     captured = capsys.readouterr()
     assert "using IPP endpoint (given)" in captured.err
     assert "fail" not in captured.err
+
+
+def test_what_counts_as_a_complete_address():
+    from ipp_joblog.cli import Settings
+
+    def target(host, path=None):
+        return Settings(host=host, state_dir=".", timeout=1, path=path).target
+
+    assert target("printer").pinned is False  # nothing known
+    assert target("printer:80").pinned is False  # port only
+    assert target("printer", path="/ipp/print").pinned is False  # path only
+    assert target("ipp://printer/ipp/print").pinned is True
+    assert target("printer:80", path="/ipp/print").pinned is True  # --path still works
+
+
+def test_the_database_is_named_after_the_host_not_the_url(tmp_path):
+    """However the address is written, one printer keeps one database."""
+    from ipp_joblog.cli import Settings
+
+    def database(host):
+        return Settings(host=host, state_dir=tmp_path, timeout=1, path=None).database.name
+
+    assert database("hpm880") == "hpm880.sqlite3"
+    assert database("ipp://hpm880:631/ipp/print") == "hpm880.sqlite3"
+    assert database("hpm880:80") == "hpm880.sqlite3"
 
 
 def test_probe_fails_when_the_printer_keeps_no_history(monkeypatch, capsys):

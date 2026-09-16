@@ -153,9 +153,9 @@ Everything has a flag and an environment variable:
 
 | Variable | Flag | Default |
 | --- | --- | --- |
-| `IPP_PRINTER_HOST` | `--host` | *required* |
+| `IPP_PRINTER_HOST` | `--host` | *required* — a name, `name:port`, or a full URL |
 | `IPP_JOBLOG_STATE_DIR` | `--state-dir` | `.` |
-| `IPP_PATH` | `--path` | discovered, `/ipp/print` |
+| `IPP_PATH` | `--path` | discovered; overrides the path in `--host` |
 | `IPP_JOBLOG_HTML_DIR` | `--html-dir` | `<state-dir>/public` |
 | `IPP_JOBLOG_PORT` | `--port` | `8080` |
 | `IPP_JOBLOG_BIND` | `--bind` | all interfaces |
@@ -220,9 +220,20 @@ Three things are not guaranteed by the standard:
 3. **The endpoint is vendor-specific**, in both halves. `/ipp/print` covers
    AirPrint and IPP Everywhere devices; CUPS queues and older firmware use
    something else, and a few printers answer IPP on their web port rather than
-   631. `probe` walks ports 631, 80 and 443 against the candidate paths,
-   checking each port for a listener first, and `--path` (or `IPP_PATH`) pins
-   one.
+   631. Both are discovered: the ports are scanned, then the candidate paths
+   tried on whichever could be listening.
+
+   You never have to configure this, but you can. `--host` takes a bare name, a
+   `name:port`, or a whole URL — so the device URI that `lpstat -v` prints for a
+   CUPS queue can be pasted in unchanged:
+
+   ```bash
+   ipp-joblog --host ipp://printer.example:631/ipp/print probe
+   ```
+
+   A complete address skips the scan; anything less just narrows it. The
+   database is always named after the host, so however you write the address it
+   stays one printer.
 
 When a printer cannot be reached, `probe` scans the ports that say what it is —
 631, 80, 443, 9100 and 515 — and reads the shape. A printer that takes data on

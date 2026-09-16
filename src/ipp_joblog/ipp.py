@@ -9,10 +9,12 @@ from __future__ import annotations
 import socket
 import struct
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
 from typing import Any
 from urllib.error import HTTPError
+from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 IPP_VERSION = (2, 0)
@@ -26,6 +28,45 @@ COMMON_PATHS = ("/ipp/print", "/ipp/printer", "/ipp/port1", "/", "/printers/prin
 # and a few only over TLS, so those are worth a look before giving up.
 COMMON_PORTS = (631, 80, 443)
 PORT_PROBE_TIMEOUT = 3.0
+
+
+# What each scheme implies when a URL does not spell out a port.
+SCHEME_PORTS = {"ipp": 631, "ipps": 443, "http": 80, "https": 443}
+
+
+@dataclass(frozen=True, slots=True)
+class Target:
+    """Where to find a printer: a host, and optionally how to reach it."""
+
+    host: str
+    port: int | None = None
+    path: str | None = None
+
+    @property
+    def pinned(self) -> bool:
+        """Nothing is left to discover."""
+        return bool(self.port and self.path)
+
+
+def parse_target(value: str) -> Target:
+    """Read a printer address, from a bare name up to a full URL.
+
+    ``hpm880``, ``192.168.1.50:80`` and ``ipp://hpm880:631/ipp/print`` are all
+    accepted, so the device URI that ``lpstat -v`` prints for a CUPS queue can
+    be pasted in unchanged.
+    """
+    text = value.strip()
+    if "://" in text:
+        parts = urlsplit(text)
+        return Target(
+            host=parts.hostname or "",
+            port=parts.port or SCHEME_PORTS.get(parts.scheme.lower()),
+            path=parts.path if parts.path not in ("", "/") else None,
+        )
+    host, separator, port = text.rpartition(":")
+    if separator and port.isdigit() and ":" not in host:  # not an IPv6 literal
+        return Target(host=host, port=int(port))
+    return Target(host=text)
 
 
 def port_state(host: str, port: int, timeout: float = PORT_PROBE_TIMEOUT) -> str:

@@ -10,7 +10,14 @@ from __future__ import annotations
 import time
 from datetime import datetime
 
-from ipp_joblog.ipp import COMMON_PATHS, Attribute, IppClient, IppError, port_state
+from ipp_joblog.ipp import (
+    COMMON_PATHS,
+    COMMON_PORTS,
+    Attribute,
+    IppClient,
+    IppError,
+    port_state,
+)
 
 ISSUES = "https://github.com/schlomo/ipp-joblog/issues/new"
 
@@ -29,9 +36,27 @@ DIAGNOSTIC_PORTS = (
 )
 
 
-def reachability(host: str, timeout: float) -> list[str]:
+def scan(host: str, timeout: float) -> dict[int, str]:
+    """Which printing ports are listening."""
+    return {port: port_state(host, port, timeout) for port, _ in DIAGNOSTIC_PORTS}
+
+
+def worth_trying(states: dict[int, str]) -> tuple[int, ...]:
+    """The ports worth an IPP request, in the order to try them.
+
+    Only a refused port is proof that nothing is there. A port that did not
+    answer the scan in time may still be a printer waking up -- a sleeping
+    M880 answers 80 and 9100 from its network card while its IPP service is
+    still coming to, and excluding 631 on that evidence breaks a printer that
+    works perfectly a second later.
+    """
+    candidates = tuple(port for port in COMMON_PORTS if states.get(port) != "refused")
+    return candidates or COMMON_PORTS
+
+
+def reachability(host: str, timeout: float, states: dict[int, str] | None = None) -> list[str]:
     """What is listening, and what that says about the printer."""
-    states = {port: port_state(host, port, timeout) for port, _ in DIAGNOSTIC_PORTS}
+    states = scan(host, timeout) if states is None else states
     lines = [f"host: {host}"]
     lines += [f"  {port:<5} {states[port]:<13} {what}" for port, what in DIAGNOSTIC_PORTS]
 

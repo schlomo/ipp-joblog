@@ -32,7 +32,6 @@ def test_no_jobs_means_nothing_to_judge():
 
 
 def test_poll_reports_the_skew_and_the_likely_cause(tmp_path, make_job, monkeypatch, capsys):
-    from ipp_joblog.cli import Settings
     from ipp_joblog.store import JobStore
 
     ahead = datetime.now().astimezone() + timedelta(minutes=60)
@@ -49,7 +48,11 @@ def test_poll_reports_the_skew_and_the_likely_cause(tmp_path, make_job, monkeypa
         def finished_jobs(self, *, limit: int = 500):
             return [make_job(completed_at=ahead)]
 
-    monkeypatch.setattr(Settings, "job_log", lambda self: FakeLog())
+    monkeypatch.setattr("ipp_joblog.cli.connect", lambda settings, **kw: object())
+    monkeypatch.setattr(
+        "ipp_joblog.cli.PrinterJobLog.using", staticmethod(lambda client: FakeLog())
+    )
+    monkeypatch.setattr("ipp_joblog.cli.collect_facts", lambda client, host: {"host": host})
     assert main(["--state-dir", str(tmp_path), "--host", "printer.example", "poll"]) == 0
     err = capsys.readouterr().err
     assert "60 minutes ahead" in err

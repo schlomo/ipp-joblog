@@ -164,6 +164,13 @@ class PrinterJobLog:
     ) -> None:
         self.client = IppClient(host, timeout=timeout, port=port, path=path)
 
+    @classmethod
+    def using(cls, client: IppClient) -> PrinterJobLog:
+        """Wrap a client whose endpoint is already settled, so discovery happens once."""
+        log = cls.__new__(cls)
+        log.client = client
+        return log
+
     def finished_jobs(self, *, limit: int = 500) -> list[Job]:
         """Every job the printer still remembers, oldest first."""
         groups = self.client.get_jobs(which_jobs="completed", limit=limit)

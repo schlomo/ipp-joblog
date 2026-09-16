@@ -8,12 +8,12 @@ import sys
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from ipp_joblog import diagnose as diagnostics
-from ipp_joblog.ipp import COMMON_PATHS, COMMON_PORTS, IppClient, IppError
+from ipp_joblog.ipp import COMMON_PATHS, IppClient, IppError, Target, parse_target
 from ipp_joblog.jobs import PrinterJobLog
 from ipp_joblog.output import job_line, jobs_csv, totals_csv, totals_json, totals_table
 from ipp_joblog.poller import Poller, PollResult
@@ -75,13 +75,17 @@ class Settings:
             output_format=getattr(args, "format", "text"),
         )
 
-    def job_log(self) -> PrinterJobLog:
-        return PrinterJobLog(self.host, timeout=self.timeout, path=self.path)
+    @property
+    def target(self) -> Target:
+        """The printer address, with --path still able to override the path."""
+        found = parse_target(self.host or "")
+        return replace(found, path=self.path or found.path)
 
     @property
     def database(self) -> Path:
         """This printer's database, or the only one present when no host is given."""
-        return resolve_database(self.state_dir, self.host)
+        # The host alone, so ipp://hpm880/ipp/print and hpm880 are one printer.
+        return resolve_database(self.state_dir, self.target.host or None)
 
     @property
     def page_dir(self) -> Path:
@@ -196,29 +200,78 @@ def page_writer(settings: Settings, store: JobStore) -> Callable[[], None]:
     return write
 
 
-def learn_about_printer(settings: Settings, store: JobStore) -> None:
+def learn_about_printer(client: IppClient, settings: Settings, store: JobStore) -> None:
     """Record what the printer says about itself, once, at startup.
 
     A printer's identity does not change while we watch it, so this is read once
     rather than every poll, and the dashboard reads it back from the database.
     """
     try:
-        store.remember_facts(collect_facts(settings.job_log().client, settings.host or ""))
+        store.remember_facts(collect_facts(client, settings.host or ""))
     except (IppError, OSError) as error:
         notice(f"could not read printer details: {error}")
 
 
-def connect(settings: Settings) -> IppClient:
-    """An IPP client aimed at wherever this printer actually listens."""
-    client = IppClient(settings.host, timeout=settings.timeout)
-    if settings.path:
-        client.path = settings.path
-        notice(f"using IPP endpoint (given): {client.printer_uri}")
+def connect(settings: Settings, *, quiet: bool = False) -> IppClient:
+    """An IPP client aimed at wherever this printer actually listens.
+
+    A port scan comes first: every candidate path is worth trying only on a
+    port that has something behind it, and knowing which ports are open is what
+    makes a failure explicable rather than just a failure.
+    """
+    target = settings.target
+    client = IppClient(
+        target.host, timeout=settings.timeout, port=target.port or 631, path=target.path
+    )
+    if target.pinned:
+        if not quiet:
+            notice(f"using IPP endpoint (given): {client.printer_uri}")
         return client
-    notice(f"probing {settings.host} on ports {', '.join(map(str, COMMON_PORTS))}")
-    client.port, client.path = client.find_endpoint(on_attempt=_print_attempt)
-    notice(f"using IPP endpoint: {client.printer_uri}")
+
+    states = diagnostics.scan(target.host, min(settings.timeout, 3.0))
+    if not quiet:
+        for port, what in diagnostics.DIAGNOSTIC_PORTS:
+            notice(f"  {port:<5} {states[port]:<13} {what}")
+    ports = (target.port,) if target.port else diagnostics.worth_trying(states)
+    paths = (target.path,) if target.path else COMMON_PATHS
+
+    client.port, client.path = client.find_endpoint(
+        paths=paths, ports=ports, on_attempt=None if quiet else _print_attempt
+    )
+    if not quiet:
+        notice(f"using IPP endpoint: {client.printer_uri}")
     return client
+
+
+def configuration_advice(client: IppClient) -> list[str]:
+    """How to keep using an endpoint that was not the obvious one."""
+    if (client.port, client.path) == (631, COMMON_PATHS[0]):
+        return []
+    url = f"{'ipps' if client.port == 443 else 'ipp'}://{client.host}:{client.port}{client.path}"
+    return [
+        "",
+        f"This printer answers on port {client.port} at {client.path}, not where printers",
+        "usually do. Discovery finds it every time, so nothing has to be configured — but",
+        "giving the full address skips the scan and makes startup immediate:",
+        f"  ipp-joblog --host {url} serve",
+        f"  or IPP_PRINTER_HOST={url}",
+    ]
+
+
+def reach(settings: Settings) -> IppClient:
+    """Connect for a long-running command, which must survive a sleeping printer.
+
+    Discovery failing at startup is not fatal here: the poll loop already
+    retries, so fall back to the usual endpoint and let it try again later.
+    """
+    try:
+        return connect(settings)
+    except (IppError, OSError) as error:
+        notice(f"could not find an IPP endpoint yet ({error}); will keep trying")
+        target = settings.target
+        return IppClient(
+            target.host, timeout=settings.timeout, port=target.port or 631, path=target.path
+        )
 
 
 def command_probe(settings: Settings) -> int:
@@ -240,6 +293,7 @@ def command_probe(settings: Settings) -> int:
     print("\n".join(report.lines()))
     if report.usable:
         print("\nThis printer can be accounted for.")
+        print("\n".join(configuration_advice(client)))
         return 0
 
     notice(report.problem())
@@ -252,6 +306,7 @@ def command_probe(settings: Settings) -> int:
 def command_diagnose(settings: Settings) -> int:
     """Dump everything this printer will say, for a bug report."""
     client = connect(settings)
+    print("\n".join(configuration_advice(client)))
     if settings.watch_seconds:
         print("\n".join(diagnostics.watch(client, settings.watch_seconds)))
     else:
@@ -268,18 +323,20 @@ def _print_attempt(url: str, failure: str | None) -> None:
 
 
 def command_poll(settings: Settings) -> int:
+    client = connect(settings, quiet=True)
     with open_store(settings) as store:
-        learn_about_printer(settings, store)
-        skew = report_poll(Poller(settings.job_log(), store)).clock_skew
+        learn_about_printer(client, settings, store)
+        skew = report_poll(Poller(PrinterJobLog.using(client), store)).clock_skew
         if skew:
             warn_about_clock(skew)
     return 0
 
 
 def command_watch(settings: Settings) -> int:
+    client = reach(settings)
     with open_store(settings) as store:
-        learn_about_printer(settings, store)
-        poller = Poller(settings.job_log(), store)
+        learn_about_printer(client, settings, store)
+        poller = Poller(PrinterJobLog.using(client), store)
         refresh = page_writer(settings, store) if settings.html_dir else None
         return poll_forever(poller, settings.interval, refresh)
 
@@ -287,9 +344,10 @@ def command_watch(settings: Settings) -> int:
 def command_serve(settings: Settings) -> int:
     """Poll on an interval and serve the generated page over HTTP."""
     directory = settings.page_dir
+    client = reach(settings)
     with open_store(settings) as store:
-        learn_about_printer(settings, store)
-        poller = Poller(settings.job_log(), store)
+        learn_about_printer(client, settings, store)
+        poller = Poller(PrinterJobLog.using(client), store)
         refresh = page_writer(settings, store)
         refresh()  # so the first request never races the first poll
         server = start_server(directory, settings.port, settings.bind)
@@ -327,7 +385,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--host",
         default=os.environ.get("IPP_PRINTER_HOST"),
-        help="printer hostname or IP (env: IPP_PRINTER_HOST)",
+        help="printer address (env: IPP_PRINTER_HOST): a name or IP, optionally with a "
+        "port or as a full URL such as ipp://printer:631/ipp/print — the device URI that "
+        "`lpstat -v` prints for a CUPS queue works as-is",
     )
     parser.add_argument(
         "--state-dir",
