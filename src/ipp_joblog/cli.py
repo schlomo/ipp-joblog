@@ -110,7 +110,14 @@ class Settings:
 
 
 def notice(message: str) -> None:
-    """Operational messages go to stderr, so stdout stays pipeable data."""
+    """Operational messages go to stderr, so stdout stays pipeable data.
+
+    stderr is unbuffered while stdout is block-buffered as soon as it is not a
+    terminal, so anything already printed would surface after this line when
+    both are watched together. Flushing first keeps the two in the order they
+    were written.
+    """
+    sys.stdout.flush()
     print(message, file=sys.stderr, flush=True)
 
 

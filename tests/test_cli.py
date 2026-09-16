@@ -325,3 +325,32 @@ def test_report_output_is_clean_stdout(tmp_path, make_job, capsys):
     out = capsys.readouterr().out
     assert out.splitlines()[0].startswith("user_name,")
     assert len(out.splitlines()) == 2
+
+
+def test_notices_do_not_overtake_what_was_already_printed(monkeypatch):
+    """Piped, stdout buffers and stderr does not, so the two can arrive swapped."""
+    import sys
+
+    from ipp_joblog.cli import notice
+
+    order: list[str] = []
+
+    class Recording:
+        def write(self, text):
+            return len(text)
+
+        def flush(self):
+            order.append("stdout flushed")
+
+    monkeypatch.setattr(sys, "stdout", Recording())
+    monkeypatch.setattr(
+        sys,
+        "stderr",
+        type(
+            "E",
+            (),
+            {"write": lambda self, t: len(t), "flush": lambda self: order.append("stderr written")},
+        )(),
+    )
+    notice("progress")
+    assert order == ["stdout flushed", "stderr written"]
