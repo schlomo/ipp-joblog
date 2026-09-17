@@ -6,6 +6,7 @@ implemented, so the whole thing stays small enough to test byte for byte.
 
 from __future__ import annotations
 
+import errno
 import socket
 import ssl
 import struct
@@ -100,7 +101,12 @@ def port_state(host: str, port: int, timeout: float = PORT_PROBE_TIMEOUT) -> str
         return "refused"
     except socket.gaierror:
         return "unknown host"
-    except OSError:
+    except OSError as error:
+        # EHOSTUNREACH on a LAN usually means the ARP cache has no MAC for the
+        # host yet -- a printer that was asleep. It clears once the host is
+        # woken, so it is worth telling apart from a timeout and retrying.
+        if error.errno in (errno.EHOSTUNREACH, errno.ENETUNREACH):
+            return "no route"
         return "no answer"
 
 

@@ -195,3 +195,35 @@ def test_a_sleeping_printer_is_not_written_off_by_the_scan():
     assert worth_trying(refusing) == (80,)
 
     assert worth_trying(dict.fromkeys((631, 80, 443, 9100, 515), "refused")) == COMMON_PORTS
+
+
+def test_a_cold_arp_cache_is_retried_not_reported_dead(monkeypatch):
+    """A sleeping printer answers the second scan; the first only woke it."""
+    import ipp_joblog.diagnose as d
+
+    monkeypatch.setattr(d, "RETRY_PAUSE", 0)
+    calls = {"n": 0}
+
+    def flaky(host, port, timeout):
+        calls["n"] += 1
+        return "no route" if calls["n"] <= len(d.DIAGNOSTIC_PORTS) else "open"
+
+    monkeypatch.setattr(d, "port_state", flaky)
+    states = d.scan("hpm880", 1)
+    assert set(states.values()) == {"open"}  # the retry saw it awake
+
+
+def test_a_genuinely_absent_host_is_not_retried_forever(monkeypatch):
+    """Refused somewhere means the host is really there; do not pointlessly retry."""
+    import ipp_joblog.diagnose as d
+
+    monkeypatch.setattr(d, "RETRY_PAUSE", 0)
+    calls = {"n": 0}
+
+    def once(host, port, timeout):
+        calls["n"] += 1
+        return "refused"
+
+    monkeypatch.setattr(d, "port_state", once)
+    d.scan("hpm880", 1)
+    assert calls["n"] == len(d.DIAGNOSTIC_PORTS)  # scanned once, not twice

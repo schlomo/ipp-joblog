@@ -18,6 +18,7 @@ from ipp_joblog.ipp import (
 )
 
 ISSUES = "https://github.com/schlomo/ipp-joblog/issues/new"
+RETRY_PAUSE = 1.0  # seconds, to let a woken printer answer the second scan
 
 # Brother advertises the underscore spelling; RFC 8011 uses the hyphen.
 JOB_QUEUES = ("completed", "not-completed", "not_completed")
@@ -35,8 +36,18 @@ DIAGNOSTIC_PORTS = (
 
 
 def scan(host: str, timeout: float) -> dict[int, str]:
-    """Which printing ports are listening."""
-    return {port: port_state(host, port, timeout) for port, _ in DIAGNOSTIC_PORTS}
+    """Which printing ports are listening.
+
+    A scan that comes back unreachable on every port is often a cold ARP cache
+    for a printer that was asleep -- the first packet wakes it but arrives too
+    late. One retry after a moment clears that, and costs nothing when the host
+    really is gone, because a refused or open port never triggers it.
+    """
+    states = {port: port_state(host, port, timeout) for port, _ in DIAGNOSTIC_PORTS}
+    if all(state == "no route" for state in states.values()):
+        time.sleep(RETRY_PAUSE)
+        states = {port: port_state(host, port, timeout) for port, _ in DIAGNOSTIC_PORTS}
+    return states
 
 
 def worth_trying(states: dict[int, str]) -> tuple[int, ...]:

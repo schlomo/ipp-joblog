@@ -271,3 +271,23 @@ def test_a_non_ipp_content_type_is_refused_before_decoding(monkeypatch):
     client = IppClient("printer.example")
     with pytest.raises(IppError, match="answered text/html, not IPP"):
         client.printer_attributes()
+
+
+def test_host_unreachable_is_told_apart_from_a_timeout(monkeypatch):
+    """EHOSTUNREACH is a cold ARP cache, not a printer that stayed silent."""
+    import errno
+    import socket
+
+    from ipp_joblog.ipp import port_state
+
+    def unreachable(*a, **k):
+        raise OSError(errno.EHOSTUNREACH, "No route to host")
+
+    monkeypatch.setattr(socket, "create_connection", unreachable)
+    assert port_state("hpm880", 631, 0.1) == "no route"
+
+    def timed_out(*a, **k):
+        raise TimeoutError("timed out")
+
+    monkeypatch.setattr(socket, "create_connection", timed_out)
+    assert port_state("hpm880", 631, 0.1) == "no answer"
