@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 import pytest
 
 from ipp_joblog.cli import main
@@ -227,3 +229,39 @@ def test_a_genuinely_absent_host_is_not_retried_forever(monkeypatch):
     monkeypatch.setattr(d, "port_state", once)
     d.scan("hpm880", 1)
     assert calls["n"] == len(d.DIAGNOSTIC_PORTS)  # scanned once, not twice
+
+
+def test_the_dump_is_human_readable_not_python_repr():
+    """A bug report should not be full of datetime.datetime(...) and quoted lists."""
+    from datetime import datetime
+
+    from ipp_joblog.diagnose import _render
+
+    assert _render(["completed", "not-completed"]) == "completed, not-completed"
+    assert _render(datetime(2026, 9, 17, 8, 15, tzinfo=UTC)) == "2026-09-17T08:15:00+00:00"
+    assert _render(None) == "(not reported)"
+    assert _render("schlomo") == "schlomo"  # no quotes
+    assert _render(2) == "2"
+
+
+def test_an_alternate_queue_spelling_failing_is_explained():
+    """The underscore queue is a Brother-ism; a standard printer rejecting it is fine."""
+    from ipp_joblog.ipp import IppError
+
+    class Client:
+        printer_uri = "ipp://p:631/ipp/print"
+
+        def printer_attributes(self):
+            return {}
+
+        def get_jobs(self, *, which_jobs, limit):
+            if which_jobs == "not_completed":
+                raise IppError("GET_JOBS failed with IPP status 0x040b")
+            return []
+
+    from ipp_joblog.diagnose import report
+
+    text = "\n".join(report(Client()))
+    assert "not supported" in text  # not the alarming bare "failed"
+    assert "Brother's spelling" in text
+    assert "as expected" in text

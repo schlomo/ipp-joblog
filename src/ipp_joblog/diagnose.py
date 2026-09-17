@@ -8,6 +8,7 @@ to be installed alongside the container to get it.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 
 from ipp_joblog.ipp import (
     COMMON_PORTS,
@@ -20,8 +21,17 @@ from ipp_joblog.ipp import (
 ISSUES = "https://github.com/schlomo/ipp-joblog/issues/new"
 RETRY_PAUSE = 1.0  # seconds, to let a woken printer answer the second scan
 
-# Brother advertises the underscore spelling; RFC 8011 uses the hyphen.
-JOB_QUEUES = ("completed", "not-completed", "not_completed")
+# We ask for finished jobs and, so no printer is missed, both spellings of the
+# unfinished queue: the RFC 8011 hyphen and the underscore Brother uses. Only
+# one of the two is ever real, so the other failing is expected, not a fault.
+JOB_QUEUES = (
+    ("completed", ""),
+    ("not-completed", ""),
+    (
+        "not_completed",
+        " (Brother's spelling; a printer using the RFC hyphen rejects it, as expected)",
+    ),
+)
 
 
 # Beyond the ports IPP might live on, the ones that say what a printer *is*.
@@ -125,8 +135,21 @@ def verdict(host: str, states: dict[int, str]) -> list[str]:
     return lines
 
 
+def _render(value: object) -> str:
+    """A value as a person reads it, not as Python repr()s it."""
+    if isinstance(value, (list, tuple)):
+        return ", ".join(_render(item) for item in value)
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None:
+        return "(not reported)"
+    return str(value)
+
+
 def _describe(attributes: dict[str, Attribute], names: tuple[str, ...]) -> list[str]:
-    return [f"  {name} = {attributes[name].values}" for name in names if name in attributes]
+    return [
+        f"  {name} = {_render(attributes[name].values)}" for name in names if name in attributes
+    ]
 
 
 INTERESTING = (
@@ -150,18 +173,18 @@ def report(client: IppClient) -> list[str]:
     operations = attributes.get("operations-supported")
     lines.append(f"operations-supported: {sorted(operations.values) if operations else 'none'}")
 
-    for which in JOB_QUEUES:
+    for which, note in JOB_QUEUES:
         try:
             groups = client.get_jobs(which_jobs=which, limit=500)
         except (IppError, OSError) as error:
-            lines.append(f"\nGet-Jobs which-jobs={which}: failed ({error})")
+            lines.append(f"\nGet-Jobs which-jobs={which}: not supported ({error}){note}")
             continue
         lines.append(f"\nGet-Jobs which-jobs={which}: {len(groups)} job(s)")
         if groups:
             lines.append("  attributes on the newest:")
             for key, attribute in sorted(groups[-1].items()):
                 value = attribute.values if len(attribute.values) > 1 else attribute.value
-                lines.append(f"    {key} = {value!r}")
+                lines.append(f"    {key} = {_render(value)}")
     return lines
 
 
@@ -186,7 +209,7 @@ def watch(client: IppClient, seconds: float) -> list[str]:
     seen: set[str] = set()
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
-        for which in JOB_QUEUES:
+        for which, _ in JOB_QUEUES:
             try:
                 groups = client.get_jobs(which_jobs=which, limit=100)
             except (IppError, OSError):
