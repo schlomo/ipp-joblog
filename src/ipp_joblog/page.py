@@ -8,9 +8,10 @@ can hand out unchanged.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from html import escape
 
+from ipp_joblog import clock
 from ipp_joblog.jobs import MONOCHROME_MODES
 from ipp_joblog.store import PrinterSummary, UserTotals, add_sheets
 
@@ -301,6 +302,7 @@ class Dashboard:
     refresh_seconds: int = 0
     window: str = "all time"
     facts: dict[str, str] = field(default_factory=dict)
+    correction: timedelta = timedelta()
 
     @property
     def pages(self) -> int:
@@ -335,7 +337,7 @@ class Dashboard:
     def job_rows(self) -> list[list[Cell]]:
         return [
             [
-                _when(job["completed_at"]),
+                _when(clock.apply_iso(job["completed_at"], self.correction)),
                 text(job["user_name"]),
                 text(job["impressions"]),
                 text(job["sheets"]),

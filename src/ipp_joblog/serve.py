@@ -63,6 +63,7 @@ def write_page(store: JobStore, directory: Path, *, printer: str, refresh_second
         recent_jobs=store.recent(),
         refresh_seconds=refresh_seconds,
         facts=store.facts(),
+        correction=store.clock_correction(),
     )
     return _publish(directory, f"{store.summarise().slug}.html", dashboard.render())
 

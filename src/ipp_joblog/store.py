@@ -10,9 +10,10 @@ import re
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass, fields
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from ipp_joblog import clock
 from ipp_joblog.jobs import MONOCHROME_MODES, Job
 
 # One column per Job field, in the same order, plus when we first saw the job.
@@ -172,6 +173,7 @@ class PrinterSummary:
     pages: int
     sheets: int | None
     last_job_at: str | None
+    correction: timedelta = timedelta()
 
     @property
     def host(self) -> str:
@@ -342,10 +344,18 @@ class JobStore:
         )
         self._connection.commit()
 
+    def clock_correction(self) -> timedelta:
+        """The stored shift for this printer's misreported clock, or none."""
+        return clock.stored_correction(self.facts())
+
+    def set_clock_correction(self, correction: timedelta) -> None:
+        self.remember_facts({clock.KEY: clock.as_fact(correction)})
+
     def summarise(self) -> PrinterSummary:
         """Everything the overview page needs about this printer."""
         totals = self.totals_by_user()
         newest = self.recent(1)
+        correction = self.clock_correction()
         return PrinterSummary(
             slug=self.path.name.removesuffix(DB_SUFFIX),
             facts=self.facts(),
@@ -353,7 +363,8 @@ class JobStore:
             jobs=sum(total.jobs for total in totals),
             pages=sum(total.impressions for total in totals),
             sheets=add_sheets(total.sheets for total in totals),
-            last_job_at=newest[0]["completed_at"] if newest else None,
+            last_job_at=clock.apply_iso(newest[0]["completed_at"], correction) if newest else None,
+            correction=correction,
         )
 
     def recent(self, limit: int = 50) -> list[dict]:

@@ -12,6 +12,7 @@ import io
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import timedelta
 
 from ipp_joblog.jobs import Job
 from ipp_joblog.store import UserTotals
@@ -62,10 +63,12 @@ def _csv(header: Sequence[str], rows: Sequence[Sequence[object]]) -> str:
     return out.getvalue()
 
 
-def job_line(job: Job) -> str:
+def job_line(job: Job, correction: timedelta = timedelta()) -> str:
     """One line per job, for the poll and watch logs."""
     # astimezone(): printers report in their own zone, and a Brother uses UTC.
-    when = job.completed_at.astimezone().strftime("%Y-%m-%d %H:%M") if job.completed_at else "?"
+    # correction: a printer that misreports its clock is shifted back on display.
+    completed = job.completed_at + correction if job.completed_at else None
+    when = completed.astimezone().strftime("%Y-%m-%d %H:%M") if completed else "?"
     colour = "color" if job.is_color else "mono"
     sheets = UNKNOWN if job.sheets is None else str(job.sheets)
     return (

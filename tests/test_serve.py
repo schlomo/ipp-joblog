@@ -168,3 +168,29 @@ def test_the_printer_link_on_a_card_opens_a_new_tab(tmp_path, make_job):
     own_page, printer = card.split("</a>")[0], card.split("</a>")[1]
     assert "target=" not in own_page  # the card's own link navigates in place
     assert 'target="_blank"' in printer and 'rel="noopener noreferrer"' in printer
+
+
+def test_the_overview_corrects_a_printers_last_job_time(tmp_path, make_job):
+    """A misreporting printer's last-job time on the index is corrected too."""
+    from datetime import timedelta
+
+    with JobStore(tmp_path / "hpm880.sqlite3") as store:
+        store.remember_facts({"host": "hpm880"})
+        store.set_clock_correction(timedelta(minutes=-60))
+        store.add([make_job(completed_at=None)])
+    summary = summarise_all(tmp_path)[0]
+    assert summary.correction == timedelta(minutes=-60)
+
+
+def test_the_jobs_csv_stays_the_raw_record(tmp_path, make_job):
+    """Correction is a display concern; the CSV export is what the printer sent."""
+    from datetime import datetime, timedelta, timezone
+
+    from ipp_joblog.output import jobs_csv
+
+    completed = datetime(2026, 9, 17, 6, 50, tzinfo=timezone(timedelta(hours=1)))
+    with JobStore(tmp_path / "hpm880.sqlite3") as store:
+        store.set_clock_correction(timedelta(minutes=-60))
+        store.add([make_job(completed_at=completed)])
+        csv = jobs_csv(store.rows())
+    assert "2026-09-17T06:50:00+01:00" in csv  # exactly as stored, uncorrected

@@ -148,30 +148,21 @@ def report_poll(poller: Poller) -> PollResult:
     result = poller.poll()
     if result.rolled_over:
         notice(ROLLOVER_WARNING)
+    correction = poller.store.clock_correction()
     for job in result.stored:
-        notice(job_line(job))
+        notice(job_line(job, correction))
     return result
 
 
-def warn_about_clock(skew: timedelta) -> None:
-    """Say what was measured, and name the likeliest cause without assuming it.
-
-    A Brother MFC-L3770CDW showed the right time on its own front page while
-    reporting job times an hour ahead: its firmware applies daylight saving to
-    the display but not to the offset it sends over IPP. So "your clock is
-    wrong" is often not the problem, and saying so sends people to a settings
-    page that already looks correct.
-    """
-    minutes = round(skew.total_seconds() / 60)
-    notice(
-        f"warning: this printer reports job times {minutes} minutes ahead of this machine, "
-        "so stored timestamps are off by that much."
-    )
-    notice(
-        "  if the printer's own clock looks right, its firmware may apply daylight saving "
-        "to the display but not to the UTC offset it reports. Setting the printer's time "
-        "zone to the current total offset with automatic daylight saving off works around it."
-    )
+def announce_correction(correction: timedelta) -> None:
+    minutes = round(-correction.total_seconds() / 60)
+    if minutes:
+        notice(
+            f"this printer reports times {minutes} minutes off (its own display is right, "
+            "its IPP offset is not); compensating on the dashboard."
+        )
+    else:
+        notice("this printer's clock is back in step; no longer compensating.")
 
 
 def poll_forever(poller: Poller, interval: float, after_poll: Callable[[], None] | None) -> int:
@@ -181,14 +172,9 @@ def poll_forever(poller: Poller, interval: float, after_poll: Callable[[], None]
     poll failures are reported and retried on the next tick. ``after_poll`` runs
     every cycle, successful or not, so the dashboard keeps its clock moving.
     """
-    warned_about_clock = False
     while True:
         try:
-            result = report_poll(poller)
-            skew = result.clock_skew
-            if skew and not warned_about_clock:
-                warn_about_clock(skew)  # once per run: the cause will not change
-                warned_about_clock = True
+            report_poll(poller)
         except (IppError, OSError) as error:
             notice(f"poll failed: {error}")
         if after_poll:
@@ -221,9 +207,15 @@ def learn_about_printer(client: IppClient, settings: Settings, store: JobStore) 
     rather than every poll, and the dashboard reads it back from the database.
     """
     try:
-        store.remember_facts(collect_facts(client, settings.host or ""))
+        facts = collect_facts(client, settings.host or "")
     except (IppError, OSError) as error:
         notice(f"could not read printer details: {error}")
+        return
+    before = store.clock_correction()
+    store.remember_facts(facts)  # facts carry the correction when the printer gave its clock
+    after = store.clock_correction()
+    if after != before:
+        announce_correction(after)
 
 
 def connect(settings: Settings, *, quiet: bool = False) -> IppClient:
@@ -384,9 +376,7 @@ def command_poll(settings: Settings) -> int:
     client = connect(settings, quiet=True)
     with open_store(settings) as store:
         learn_about_printer(client, settings, store)
-        skew = report_poll(Poller(PrinterJobLog.using(client), store)).clock_skew
-        if skew:
-            warn_about_clock(skew)
+        report_poll(Poller(PrinterJobLog.using(client), store))
     return 0
 
 
