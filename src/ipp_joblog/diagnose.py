@@ -134,6 +134,7 @@ INTERESTING = (
     "printer-state-reasons",
     "ipp-versions-supported",
     "which-jobs-supported",
+    "printer-current-time",
     "printer-more-info",
     "document-format-supported",
 )

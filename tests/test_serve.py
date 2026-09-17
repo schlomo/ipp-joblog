@@ -172,14 +172,15 @@ def test_the_printer_link_on_a_card_opens_a_new_tab(tmp_path, make_job):
 
 def test_the_overview_corrects_a_printers_last_job_time(tmp_path, make_job):
     """A misreporting printer's last-job time on the index is corrected too."""
-    from datetime import timedelta
+    from datetime import datetime, timedelta, timezone
 
     with JobStore(tmp_path / "hpm880.sqlite3") as store:
         store.remember_facts({"host": "hpm880"})
-        store.set_clock_correction(timedelta(minutes=-60))
-        store.add([make_job(completed_at=None)])
+        completed = datetime(2026, 9, 17, 8, 50, tzinfo=timezone(timedelta(hours=2)))
+        store.add([make_job(completed_at=completed)], correction=timedelta(minutes=-60))
     summary = summarise_all(tmp_path)[0]
-    assert summary.correction == timedelta(minutes=-60)
+    # last_job_at is the corrected instant, an hour back from what was reported
+    assert summary.last_job_at == "2026-09-17T07:50:00+02:00"
 
 
 def test_the_jobs_csv_stays_the_raw_record(tmp_path, make_job):
@@ -190,7 +191,11 @@ def test_the_jobs_csv_stays_the_raw_record(tmp_path, make_job):
 
     completed = datetime(2026, 9, 17, 6, 50, tzinfo=timezone(timedelta(hours=1)))
     with JobStore(tmp_path / "hpm880.sqlite3") as store:
-        store.set_clock_correction(timedelta(minutes=-60))
-        store.add([make_job(completed_at=completed)])
-        csv = jobs_csv(store.rows())
-    assert "2026-09-17T06:50:00+01:00" in csv  # exactly as stored, uncorrected
+        store.add([make_job(completed_at=completed)], correction=timedelta(minutes=-60))
+        rows = store.rows()
+        csv = jobs_csv(rows)
+    # the printer's literal value is preserved in the raw column
+    assert rows[0]["completed_at_raw"] == "2026-09-17T06:50:00+01:00"
+    # and completed_at is the corrected instant
+    assert rows[0]["completed_at"] == "2026-09-17T05:50:00+01:00"
+    assert "completed_at_raw" in csv

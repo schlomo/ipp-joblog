@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from ipp_joblog import clock
 from ipp_joblog import diagnose as diagnostics
 from ipp_joblog.ipp import (
     COMMON_PATHS,
@@ -148,21 +149,21 @@ def report_poll(poller: Poller) -> PollResult:
     result = poller.poll()
     if result.rolled_over:
         notice(ROLLOVER_WARNING)
-    correction = poller.store.clock_correction()
     for job in result.stored:
-        notice(job_line(job, correction))
+        notice(job_line(job, result.correction))  # the in-memory job is still raw
     return result
 
 
-def announce_correction(correction: timedelta) -> None:
+def announce_correction(correction: timedelta, previous: timedelta) -> None:
+    """Say when the offset a printer is being corrected by changes."""
     minutes = round(-correction.total_seconds() / 60)
     if minutes:
         notice(
             f"this printer reports times {minutes} minutes off (its own display is right, "
-            "its IPP offset is not); compensating on the dashboard."
+            "its IPP offset is not); storing the corrected time."
         )
-    else:
-        notice("this printer's clock is back in step; no longer compensating.")
+    elif previous:
+        notice("this printer's clock is back in step; storing times as sent.")
 
 
 def poll_forever(poller: Poller, interval: float, after_poll: Callable[[], None] | None) -> int:
@@ -172,9 +173,13 @@ def poll_forever(poller: Poller, interval: float, after_poll: Callable[[], None]
     poll failures are reported and retried on the next tick. ``after_poll`` runs
     every cycle, successful or not, so the dashboard keeps its clock moving.
     """
+    corrected_by = timedelta()
     while True:
         try:
-            report_poll(poller)
+            result = report_poll(poller)
+            if result.stored and result.correction != corrected_by:
+                announce_correction(result.correction, corrected_by)
+                corrected_by = result.correction
         except (IppError, OSError) as error:
             notice(f"poll failed: {error}")
         if after_poll:
@@ -211,11 +216,14 @@ def learn_about_printer(client: IppClient, settings: Settings, store: JobStore) 
     except (IppError, OSError) as error:
         notice(f"could not read printer details: {error}")
         return
-    before = store.clock_correction()
-    store.remember_facts(facts)  # facts carry the correction when the printer gave its clock
-    after = store.clock_correction()
-    if after != before:
-        announce_correction(after)
+    store.remember_facts(facts)
+    # A printer that will not report its own clock cannot be corrected; say so
+    # once, so times that look an hour out are explained rather than mysterious.
+    if clock.measure(client) is None:
+        notice(
+            "this printer does not report its own clock, so its times are stored and "
+            "shown exactly as it sends them -- an hour out if its offset is wrong."
+        )
 
 
 def connect(settings: Settings, *, quiet: bool = False) -> IppClient:
@@ -361,22 +369,31 @@ def command_probe(settings: Settings) -> int:
 
 
 def command_diagnose(settings: Settings) -> int:
-    """Dump everything this printer will say, for a bug report."""
+    """Dump everything this printer will say, and say whether it is usable."""
     client = connect(settings)
     print("\n".join(configuration_advice(client)))
     if settings.watch_seconds:
         print("\n".join(diagnostics.watch(client, settings.watch_seconds)))
-    else:
-        print("\n".join(diagnostics.report(client)))
+        print("\n".join(diagnostics.issue_invitation(settings.host)))
+        return 0
+
+    print("\n".join(diagnostics.report(client)))
+    report = probe(client)
+    if report.usable:
+        print("\nThis printer can be accounted for.")
+        return 0
+    print(report.problem().strip())
     print("\n".join(diagnostics.issue_invitation(settings.host)))
-    return 0
+    return 1
 
 
 def command_poll(settings: Settings) -> int:
     client = connect(settings, quiet=True)
     with open_store(settings) as store:
         learn_about_printer(client, settings, store)
-        report_poll(Poller(PrinterJobLog.using(client), store))
+        result = report_poll(Poller(PrinterJobLog.using(client), store))
+        if result.stored and result.correction:
+            announce_correction(result.correction, timedelta())
     return 0
 
 

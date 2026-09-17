@@ -8,16 +8,9 @@ verdict testable without capturing output.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 
-from ipp_joblog import clock
 from ipp_joblog.ipp import IppClient
 from ipp_joblog.jobs import OPTIONAL_ATTRIBUTES, REQUIRED_ATTRIBUTES, Job
-
-
-def _now() -> datetime:
-    return datetime.now().astimezone()
-
 
 NO_HISTORY = (
     "This printer keeps no completed-job history, so per-user page counts\n"
@@ -118,13 +111,6 @@ def collect_facts(client: IppClient, host: str) -> dict[str, str]:
         if attribute is None or attribute.value is None:
             continue
         facts[name] = ", ".join(str(value) for value in attribute.values)
-
-    # The printer's own clock against ours: an exact measure of any offset,
-    # kept as the correction the dashboard applies. Not shown -- it is a reading
-    # from startup, not a live clock.
-    now = attributes.get("printer-current-time")
-    if now is not None and isinstance(now.value, datetime):
-        facts[clock.KEY] = clock.as_fact(clock.correction_for(now.value - _now()))
     return facts
 
 

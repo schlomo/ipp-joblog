@@ -113,7 +113,10 @@ Each rebuilds `index.html` from every database, so the one server shows them all
   history.
 - **Wrong clocks are corrected automatically.** Some printers report a stale UTC
   offset over IPP though their own display is right. `ipp-joblog` measures the
-  error and shifts the shown times to match; stored timestamps stay as sent.
+  error against the printer's own clock and stores the corrected instant, so the
+  dashboard needs no time-zone logic; the printer's literal value is kept
+  alongside. A printer that will not report its clock is left as sent, and says
+  so once.
 
 ## Will it work on my printer?
 

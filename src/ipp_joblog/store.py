@@ -13,7 +13,6 @@ from dataclasses import dataclass, fields
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ipp_joblog import clock
 from ipp_joblog.jobs import MONOCHROME_MODES, Job
 
 # One column per Job field, in the same order, plus when we first saw the job.
@@ -104,8 +103,22 @@ MIGRATIONS: tuple[tuple[str, ...], ...] = (
         "CREATE INDEX IF NOT EXISTS jobs_user_completed ON jobs (user_name, completed_at)",
         "CREATE INDEX IF NOT EXISTS jobs_completed ON jobs (completed_at)",
     ),
+    (
+        # completed_at/created_at now hold the corrected instant; the printer's
+        # literal value is kept alongside so a bad clock reading is never
+        # destructive. Existing rows were stored uncorrected, so their current
+        # value IS the raw value.
+        "ALTER TABLE jobs ADD COLUMN created_at_raw TEXT",
+        "ALTER TABLE jobs ADD COLUMN completed_at_raw TEXT",
+        "UPDATE jobs SET created_at_raw = created_at, completed_at_raw = completed_at",
+    ),
 )
 SCHEMA_VERSION = len(MIGRATIONS)
+
+# Extra columns that are not Job fields: when we first saw a job, and the raw
+# timestamps the printer reported before any clock correction.
+RAW_COLUMNS = ("created_at_raw", "completed_at_raw")
+CORRECTED_COLUMNS = ("created_at", "completed_at")
 
 
 class StoreVersionError(RuntimeError):
@@ -173,7 +186,6 @@ class PrinterSummary:
     pages: int
     sheets: int | None
     last_job_at: str | None
-    correction: timedelta = timedelta()
 
     @property
     def host(self) -> str:
@@ -217,10 +229,16 @@ def add_sheets(counts: Iterable[int | None]) -> int | None:
     return None if any(count is None for count in known) else sum(known)
 
 
-def _column_value(job: Job, column: str) -> object:
-    """Datetimes go in as ISO text; everything else as-is."""
+def _iso(moment: datetime | None) -> str | None:
+    return moment.isoformat() if moment is not None else None
+
+
+def _column_value(job: Job, column: str, correction: timedelta) -> object:
+    """Datetimes go in as ISO text; a completion or creation time is corrected."""
     value = getattr(job, column)
-    return value.isoformat() if isinstance(value, datetime) else value
+    if isinstance(value, datetime):
+        return _iso(value + correction if column in CORRECTED_COLUMNS else value)
+    return value
 
 
 class JobStore:
@@ -287,17 +305,36 @@ class JobStore:
     def known_keys(self) -> set[str]:
         return {row["key"] for row in self._query("SELECT key FROM jobs")}
 
-    def add(self, jobs: Iterable[Job], *, seen_at: datetime | None = None) -> list[Job]:
-        """Insert jobs we have not stored yet and return exactly those."""
+    def add(
+        self,
+        jobs: Iterable[Job],
+        *,
+        correction: timedelta = timedelta(),
+        seen_at: datetime | None = None,
+    ) -> list[Job]:
+        """Insert jobs we have not stored yet and return exactly those.
+
+        ``correction`` shifts the stored completion and creation times to the
+        true instant; the printer's literal values are kept in the raw columns,
+        so the shift is auditable and never irreversible.
+        """
         seen = (seen_at or datetime.now().astimezone()).isoformat()
         known = self.known_keys()
         fresh = [job for job in jobs if job.key not in known]
 
-        columns = ", ".join((*JOB_COLUMNS, SEEN_COLUMN))
-        placeholders = ", ".join("?" * (len(JOB_COLUMNS) + 1))
+        columns = ", ".join((*JOB_COLUMNS, SEEN_COLUMN, *RAW_COLUMNS))
+        placeholders = ", ".join("?" * (len(JOB_COLUMNS) + 1 + len(RAW_COLUMNS)))
         self._connection.executemany(
             f"INSERT OR IGNORE INTO jobs ({columns}) VALUES ({placeholders})",
-            [(*(_column_value(job, column) for column in JOB_COLUMNS), seen) for job in fresh],
+            [
+                (
+                    *(_column_value(job, column, correction) for column in JOB_COLUMNS),
+                    seen,
+                    _iso(job.created_at),
+                    _iso(job.completed_at),
+                )
+                for job in fresh
+            ],
         )
         self._connection.commit()
         return fresh
@@ -344,18 +381,10 @@ class JobStore:
         )
         self._connection.commit()
 
-    def clock_correction(self) -> timedelta:
-        """The stored shift for this printer's misreported clock, or none."""
-        return clock.stored_correction(self.facts())
-
-    def set_clock_correction(self, correction: timedelta) -> None:
-        self.remember_facts({clock.KEY: clock.as_fact(correction)})
-
     def summarise(self) -> PrinterSummary:
         """Everything the overview page needs about this printer."""
         totals = self.totals_by_user()
         newest = self.recent(1)
-        correction = self.clock_correction()
         return PrinterSummary(
             slug=self.path.name.removesuffix(DB_SUFFIX),
             facts=self.facts(),
@@ -363,8 +392,7 @@ class JobStore:
             jobs=sum(total.jobs for total in totals),
             pages=sum(total.impressions for total in totals),
             sheets=add_sheets(total.sheets for total in totals),
-            last_job_at=clock.apply_iso(newest[0]["completed_at"], correction) if newest else None,
-            correction=correction,
+            last_job_at=newest[0]["completed_at"] if newest else None,
         )
 
     def recent(self, limit: int = 50) -> list[dict]:

@@ -11,12 +11,20 @@ from ipp_joblog.poller import Poller
 from ipp_joblog.store import SCHEMA_VERSION, JobStore
 
 
+class _NoClock:
+    """A client that reports no printer-current-time, so nothing is corrected."""
+
+    def printer_attributes(self) -> dict:
+        return {}
+
+
 class FakeLog:
     """Stands in for the printer: returns a scripted history per poll."""
 
     def __init__(self, histories: list[list[Job]]) -> None:
         self._histories = histories
         self.polls = 0
+        self.client = _NoClock()
 
     def finished_jobs(self, *, limit: int = 500) -> list[Job]:
         history = self._histories[min(self.polls, len(self._histories) - 1)]

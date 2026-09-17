@@ -82,14 +82,14 @@ def test_totals_on_empty_store(store):
     assert store.totals_by_user() == []
 
 
-def test_schema_matches_the_job_dataclass(store):
-    """The insert derives its columns from Job, so the table must agree with it."""
-    from ipp_joblog.store import JOB_COLUMNS, SEEN_COLUMN
+def test_schema_matches_the_stored_columns(store):
+    """The insert lists its columns; the table must hold exactly those."""
+    from ipp_joblog.store import JOB_COLUMNS, RAW_COLUMNS, SEEN_COLUMN
 
-    # Order differs: ALTER TABLE appends, so migrated columns land after
-    # first_seen_at. Inserts name their columns, so only the set matters.
+    # Order differs: ALTER TABLE appends. Inserts name their columns, so the set
+    # is what matters -- the Job fields, when we saw it, and the raw timestamps.
     declared = {row["name"] for row in store._query("PRAGMA table_info(jobs)")}
-    assert declared == {*JOB_COLUMNS, SEEN_COLUMN}
+    assert declared == {*JOB_COLUMNS, SEEN_COLUMN, *RAW_COLUMNS}
 
 
 def test_a_new_database_is_stamped_with_the_current_version(store):
