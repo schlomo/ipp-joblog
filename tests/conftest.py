@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import time as _time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -8,6 +10,27 @@ import pytest
 from ipp_joblog.ipp import Attribute, decode_response
 from ipp_joblog.jobs import Job
 from ipp_joblog.store import JobStore
+
+
+@pytest.fixture(autouse=True)
+def _fixed_timezone():
+    """Pin the process time zone so display tests do not depend on the runner.
+
+    The dashboard shows times in the host's local zone -- correct behaviour, but
+    it makes any test that asserts a rendered wall-clock time depend on where it
+    runs. CI is UTC; the assertions here are written for Europe/Berlin, so fix
+    it for the duration of each test.
+    """
+    previous = os.environ.get("TZ")
+    os.environ["TZ"] = "Europe/Berlin"
+    _time.tzset()
+    yield
+    if previous is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = previous
+    _time.tzset()
+
 
 FIXTURES = Path(__file__).parent / "fixtures"
 CET = timezone(timedelta(hours=1))
