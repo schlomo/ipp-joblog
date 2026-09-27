@@ -1,15 +1,17 @@
 services:
   ipp-joblog:
+    container_name: ipp-joblog
     image: ghcr.io/schlomo/ipp-joblog:latest
     # build: .          # uncomment to build from a checkout instead
     environment:
-      IPP_PRINTER_HOST: "192.168.1.50"   # your printer (name, name:port, or full URL)
-      TZ: "Europe/Berlin"                # so timestamps read local
-    command: ["serve", "--interval", "15"]   # poll every 15s and serve the dashboard
+      IPP_PRINTER_HOST: "192.168.1.50" # your printer (name, name:port, or full URL)
+      TZ: "Europe/Berlin" # so timestamps read local
+    command: ["serve", "--interval", "15"] # poll every 15s and serve the dashboard
     ports:
-      - "8080:8080"                      # dashboard at http://localhost:8080
+      - "8080:8080" # dashboard at http://localhost:8080
     volumes:
       # SQLite databases + rendered index.html live in ./data next to this file.
       # Created on first run; back it up by copying the folder.
       - ./data:/data
     restart: unless-stopped
+    # user: root    # defaults to ipp-joblog (10001), match to what you like
