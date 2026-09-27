@@ -27,8 +27,9 @@ VOLUME /data
 EXPOSE 8080
 USER ipp-joblog
 
+# Honour IPP_JOBLOG_PORT: the server binds it, so the probe must knock there too.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
-  CMD wget -qO /dev/null http://127.0.0.1:8080/ || exit 1
+  CMD wget -qO /dev/null "http://127.0.0.1:${IPP_JOBLOG_PORT:-8080}/" || exit 1
 
 ENTRYPOINT ["python3", "-m", "ipp_joblog"]
 CMD ["serve"]
